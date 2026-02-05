@@ -52,11 +52,11 @@ def export_onnx(args):
     outputs = ['outputs']
     dynamic = {'outputs': {0: 'batch', 1: 'anchors'}}
 
-    m = torch.load('./weights/best.pt')['model'].float()
+    m = torch.load('./runs/best.pt')['model'].float()
     x = torch.zeros((1, 3, args.input_size, args.input_size))
 
     torch.onnx.export(m.cpu(), x.cpu(),
-                      f='./weights/best.onnx',
+                      f='./runs/best.onnx',
                       verbose=False,
                       opset_version=12,
                       # WARNING: DNN inference with torch>=1.12 may require do_constant_folding=False
@@ -66,10 +66,10 @@ def export_onnx(args):
                       dynamic_axes=dynamic or None)
 
     # Checks
-    model_onnx = onnx.load('./weights/best.onnx')  # load onnx model
+    model_onnx = onnx.load('./runs/best.onnx')  # load onnx model
     onnx.checker.check_model(model_onnx)  # check onnx model
 
-    onnx.save(model_onnx, './weights/best.onnx')
+    onnx.save(model_onnx, './runs/best.onnx')
     # Inference example
     # https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/autobackend.py
 
@@ -125,7 +125,7 @@ def compute_metric(output, target, iou_v):
 def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65):
     max_wh = 7680
     max_det = 300
-
+    max_nms = 30000
     bs = outputs.shape[0]  # batch size
     nc = outputs.shape[1] - 4  # number of classes
     xc = outputs[:, 4:4 + nc].amax(1) > confidence_threshold  # candidates
@@ -228,7 +228,7 @@ def plot_curve(px, py, names, save_dir, x_label="Confidence", y_label="Metric"):
     pyplot.close(figure)
 
 
-def compute_ap(version, epochs, tp, conf, output, target, plot=False, names=(), eps=1E-16, save_dir=None):
+def compute_ap(version, tp, conf, output, target, plot=False, names=(), eps=1E-16, save_dir=None):
     """
     Compute the average precision, given the recall and precision curves.
     Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
@@ -301,7 +301,7 @@ def compute_ap(version, epochs, tp, conf, output, target, plot=False, names=(), 
         
         # Ensure the save directory exists
         import os
-        weight_dir = "./weights" # Or derived from save_dir variable
+        weight_dir = "./runs" # Or derived from save_dir variable
         if not os.path.exists(weight_dir):
             os.makedirs(weight_dir)
             
@@ -364,7 +364,7 @@ def strip_optimizer(filename):
     x['model'].half()  # to FP16
     for p in x['model'].parameters():
         p.requires_grad = False
-    torch.save(x['model'].state_dict(), f=f"./weights/{pathlib.Path(filename).stem}_state_dict.pt")
+    torch.save(x['model'].state_dict(), f=f"./runs/{pathlib.Path(filename).stem}_state_dict.pt")
 
 
 def clip_gradients(model, max_norm=10.0):
@@ -421,7 +421,7 @@ def plot_lr(args, optimizer, scheduler, num_steps):
     pyplot.grid()
     pyplot.xlim(0, args.epochs * num_steps)
     pyplot.ylim(0)
-    pyplot.savefig('./weights/lr.png', dpi=200)
+    pyplot.savefig('./runs/lr.png', dpi=200)
     pyplot.close()
 
 

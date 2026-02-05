@@ -9,7 +9,6 @@ import time
 from argparse import ArgumentParser
 from datetime import datetime
 
-from nets import nn
 from utils import util
 
 warnings.filterwarnings("ignore")

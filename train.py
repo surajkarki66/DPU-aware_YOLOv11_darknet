@@ -10,7 +10,7 @@ from torch.utils import data
 from argparse import ArgumentParser
 from datetime import datetime
 
-from nets import nn
+from models.yolo import *
 from utils import util
 from utils.dataset import Dataset
 
@@ -25,23 +25,23 @@ def train(args, params):
     activation = args.activation
     
     if version == 'n':
-        model = nn.yolo_v11_n(len(params['names']), 
+        model = yolo_v11_n(len(params['names']), 
                               exclude_post_process=False,
                               activation=activation)
     elif version == 's':
-        model = nn.yolo_v11_s(len(params['names']),
+        model = yolo_v11_s(len(params['names']),
                               exclude_post_process=False,
                               activation=activation)
     elif version == 'm':
-        model = nn.yolo_v11_m(len(params['names']),
+        model = yolo_v11_m(len(params['names']),
                               exclude_post_process=False,
                               activation=activation)
     elif version == 'l':
-        model = nn.yolo_v11_l(len(params['names']),
+        model = yolo_v11_l(len(params['names']),
                               exclude_post_process=False,
                               activation=activation)
     elif version == 'x':
-        model = nn.yolo_v11_x(len(params['names']),
+        model = yolo_v11_x(len(params['names']),
                               exclude_post_process=False,
                               activation=activation)
     else:
@@ -231,15 +231,15 @@ def profile(args, params):
     print(f"params amount: {len(params['names'])}")
     version = args.version
     if version == 'n':
-        model = nn.yolo_v11_n(len(params['names'])).fuse()
+        model = yolo_v11_n(len(params['names'])).fuse()
     elif version == 's':
-        model = nn.yolo_v11_s(len(params['names'])).fuse()
+        model = yolo_v11_s(len(params['names'])).fuse()
     elif version == 'm':
-        model = nn.yolo_v11_m(len(params['names'])).fuse()
+        model = yolo_v11_m(len(params['names'])).fuse()
     elif version == 'l':
-        model = nn.yolo_v11_l(len(params['names'])).fuse()
+        model = yolo_v11_l(len(params['names'])).fuse()
     elif version == 'x':
-        model = nn.yolo_v11_x(len(params['names'])).fuse()
+        model = yolo_v11_x(len(params['names'])).fuse()
     else:
         raise ValueError(f"Unsupported YOLOv11 variant: {version}. Choose from 'n', 's', 'm', 'l', 'x'.")
 

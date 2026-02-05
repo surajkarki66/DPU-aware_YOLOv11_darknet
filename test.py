@@ -10,29 +10,32 @@ from datetime import datetime
 
 from utils import util
 from utils.dataset import Dataset
-from utils.plotting import plot_mAP
 
 warnings.filterwarnings("ignore")
 
 
 @torch.no_grad()
-def test(args, params, model=None):
-    data_dir = args.data_dir  # <-- Use argument now
+def test(args, params, model=None, mode="val"):
+    data_dir = args.data_dir
     version = args.version
-    epochs = args.epochs
     filenames = []
-    with open(f'{data_dir}/val2017.txt') as f:
-        for filename in f.readlines():
-            filename = os.path.basename(filename.rstrip())
-            filenames.append(f'{data_dir}/images/val2017/' + filename)
+    if mode == "val":
+        with open(f'{data_dir}/val2017.txt') as f:
+            for filename in f.readlines():
+                filename = os.path.basename(filename.rstrip())
+                filenames.append(f'{data_dir}/images/val2017/' + filename)
+    
+    if mode =="test":
+        with open(f'{data_dir}/test2017.txt') as f:
+            for filename in f.readlines():
+                filename = os.path.basename(filename.rstrip())
+                filenames.append(f'{data_dir}/images/test2017/' + filename)
 
     dataset = Dataset(filenames, args.input_size, params, augment=False)
     loader = data.DataLoader(dataset, batch_size=4, shuffle=False, num_workers=4,
                              pin_memory=True, collate_fn=Dataset.collate_fn)
 
-    plot = False
     if not model:
-        plot = True
         path = os.path.join(args.save_dir, "best.pt")
         print(f"Testing model: {path}")
         model = torch.load(f=path, map_location='cuda', weights_only=False)
@@ -92,10 +95,9 @@ def test(args, params, model=None):
     if len(metrics) and metrics[0].any():
         # Pass save_dir to compute_ap
         _, _, m_pre, m_rec, map50, mean_ap = util.compute_ap(
-            version,
-            epochs, 
+            version, 
             *metrics, 
-            plot=plot, 
+            plot=True, 
             names=params["names"],
             save_dir=args.save_dir
         )
@@ -104,7 +106,6 @@ def test(args, params, model=None):
     # Return results
     model.float()  # for training
 
-    plot_mAP(args)
     return mean_ap, map50, m_rec, m_pre
 
 
@@ -115,7 +116,6 @@ def main():
     parser = ArgumentParser()
     parser.add_argument('--input-size', default=640, type=int)
     parser.add_argument('--local-rank', default=0, type=int)
-    parser.add_argument('--epochs', default=600, type=int)
     parser.add_argument('--version', default='n', type=str)
     parser.add_argument('--data-dir', default='./coco_data', type=str,
                         help='Path to data directory') 
@@ -126,7 +126,7 @@ def main():
     print(args)
 
     # --- STRATEGY: Define Dynamic Save Directory ---
-    run_name = f"{args.version}{args.epochs}"
+    run_name = f"train_{args.version}"
     args.save_dir = os.path.join("runs", run_name)
     print(f"Output Directory: {args.save_dir}")
     # -----------------------------------------------
@@ -141,7 +141,7 @@ def main():
     util.setup_seed()
     util.setup_multi_processes()
 
-    test(args, params)
+    test(args, params, mode="test")
 
     torch.cuda.empty_cache()
 

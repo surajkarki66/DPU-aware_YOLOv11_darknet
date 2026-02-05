@@ -105,7 +105,7 @@ def inference(model, args, params):
     else:
         # The existing code for video and camera inference (which works)
         # This part remains unchanged
-        model = torch.load(f'./runs/best_{args.version}_{args.epochs}.pt', 'cuda', weights_only=False)['model'].float()
+        model = torch.load(f'./runs/best.pt', 'cuda', weights_only=False)['model'].float()
         model.half()
         model.eval()
 
@@ -262,20 +262,19 @@ def main():
 
     parser = ArgumentParser()
     parser.add_argument('--input-size', default=640, type=int)
-    parser.add_argument('--epochs', default=600, type=int)
     parser.add_argument('--version', default='n', type=str)
     parser.add_argument('--source', type=str, choices=["image", "video", "camera"], required=True,
                         help="Inference source: 'image', 'video', or 'camera'")
-    parser.add_argument('--source-path', type=str, default='./src/stadium_crowd.jpg',
+    parser.add_argument('--source-path', type=str, default='./data/example.jpg',
                         help="Path to source file (for image/video mode)")
-    parser.add_argument('--hyp', default='utils/args.yaml', type=str,
+    parser.add_argument('--hyp', default='data/hyps/args.yaml', type=str,
                         help='Path to YAML config file')
 
     args = parser.parse_args()
     print(args)
 
     # --- STRATEGY: Define Dynamic Save Directory ---
-    run_name = f"{args.version}{args.epochs}"
+    run_name = f"train_{args.version}"
     args.save_dir = os.path.join("runs", run_name)
     print(f"Output Directory: {args.save_dir}")
     # -----------------------------------------------

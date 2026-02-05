@@ -30,17 +30,16 @@ class Dataset(data.Dataset):
 
     def __getitem__(self, index):
         index = self.indices[index]
-        filename = self.filenames[index]  # Get the filename for the current index
 
         if self.mosaic and random.random() < self.params['mosaic']:
             # Load MOSAIC
-            image, label = self.load_mosaic(index, self.params, filename)
+            image, label = self.load_mosaic(index, self.params)
            
             # MixUp augmentation
             if random.random() < self.params['mix_up']:
                 index = random.choice(self.indices)
                 mix_image1, mix_label1 = image, label
-                mix_image2, mix_label2 = self.load_mosaic(index, self.params, filename)
+                mix_image2, mix_label2 = self.load_mosaic(index, self.params)
 
                 image, label = mix_up(mix_image1, mix_label1, mix_image2, mix_label2)
         else:

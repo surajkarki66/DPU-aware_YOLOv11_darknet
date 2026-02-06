@@ -27,6 +27,10 @@ def train(args, params):
     if version == 'n':
         model = yolo_v11_n(len(params['names']), 
                               exclude_post_process=False,
+                              activation=activation)  
+    elif version == 't':
+        model = yolo_v11_t(len(params['names']),
+                              exclude_post_process=False,
                               activation=activation)
     elif version == 's':
         model = yolo_v11_s(len(params['names']),
@@ -45,7 +49,7 @@ def train(args, params):
                               exclude_post_process=False,
                               activation=activation)
     else:
-        raise ValueError(f"Unsupported YOLOv11 variant: {version}. Choose from 'n', 's', 'm', 'l', 'x'.")
+        raise ValueError(f"Unsupported YOLOv11 variant: {version}. Choose from 'n', 's', 'm', 'l', 'x', 't'.")
 
     model.cuda()
 
@@ -232,6 +236,8 @@ def profile(args, params):
     version = args.version
     if version == 'n':
         model = yolo_v11_n(len(params['names'])).fuse()
+    elif version == 't':
+        model = yolo_v11_t(len(params['names'])).fuse()
     elif version == 's':
         model = yolo_v11_s(len(params['names'])).fuse()
     elif version == 'm':
@@ -241,8 +247,7 @@ def profile(args, params):
     elif version == 'x':
         model = yolo_v11_x(len(params['names'])).fuse()
     else:
-        raise ValueError(f"Unsupported YOLOv11 variant: {version}. Choose from 'n', 's', 'm', 'l', 'x'.")
-
+        raise ValueError(f"Unsupported YOLOv11 variant: {version}. Choose from 'n', 's', 'm', 'l', 'x', 't'.")
     model.eval()
     model(torch.zeros(shape))
 

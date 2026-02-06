@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore")
 
 @torch.no_grad()
 def test(args, params, model=None):
-    data_dir = args.data_dir  # <-- Use argument now
+    data_dir = args.data_dir  
     version = args.version
     epochs = args.epochs
     filenames = []

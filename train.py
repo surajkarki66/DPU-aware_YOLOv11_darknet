@@ -224,8 +224,8 @@ def train(args, params):
                 del save
 
     if args.local_rank == 0:
-        util.strip_optimizer(f'./runs/{version}{args.epochs}/last.pt')  # strip optimizers
-        util.strip_optimizer(f'./runs/{version}{args.epochs}/best.pt')  # strip optimizers
+        util.strip_optimizer(f'./runs/train_{version}/last.pt')  # strip optimizers
+        util.strip_optimizer(f'./runs/train_{version}/best.pt')  # strip optimizers
     plot_mAP(args)
 
 
@@ -296,7 +296,7 @@ def main():
     print(args)
 
     # --- STRATEGY: Define Dynamic Save Directory ---
-    run_name = f"{args.version}{args.epochs}"
+    run_name = f"train_{args.version}"
     args.save_dir = os.path.join("runs", run_name)
     print(f"Output Directory: {args.save_dir}")
     # -----------------------------------------------

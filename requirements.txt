@@ -1,0 +1,14 @@
+#torch==1.13.1 #vitis
+#torchvision==0.14.1 #vitis
+
+torch==2.4.1
+torchvision==0.19.1
+opencv-python==4.7.0.72
+Pillow==9.5.0
+numpy<2.0.0
+pyyaml==6.0
+tqdm==4.65.0
+thop>=0.1.1
+matplotlib==3.7.1
+seaborn>=0.11.0
+tensorboard==2.13.0

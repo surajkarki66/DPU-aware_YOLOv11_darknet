@@ -105,15 +105,16 @@ def test(args, params, model=None, mode="val"):
     # Print results
     print(('%10s' + '%10.3g' * 4) % ('', m_pre, m_rec, map50, mean_ap))
     
-    # Save metrics to JSON
-    metrics_dict = {
-        "mean_ap": float(mean_ap),
-        "map50": float(map50),
-        "recall": float(m_rec),
-        "precision": float(m_pre)
-    }
-    with open(os.path.join(args.save_dir, "test_metrics.json"), "w") as f:
-        json.dump(metrics_dict, f, indent=4)
+    # Save metrics to JSON only
+    if mode == "test":
+        metrics_dict = {
+            "mean_ap": float(mean_ap),
+            "map50": float(map50),
+            "recall": float(m_rec),
+            "precision": float(m_pre)
+        }
+        with open(os.path.join(args.save_dir, "test_metrics.json"), "w") as f:
+            json.dump(metrics_dict, f, indent=4)
     
     # Return results
     model.float()  # for training

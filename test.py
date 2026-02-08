@@ -3,6 +3,7 @@ import warnings
 import torch
 import tqdm
 import yaml
+import json
 
 from torch.utils import data
 from argparse import ArgumentParser
@@ -103,6 +104,17 @@ def test(args, params, model=None, mode="val"):
         )
     # Print results
     print(('%10s' + '%10.3g' * 4) % ('', m_pre, m_rec, map50, mean_ap))
+    
+    # Save metrics to JSON
+    metrics_dict = {
+        "mean_ap": float(mean_ap),
+        "map50": float(map50),
+        "recall": float(m_rec),
+        "precision": float(m_pre)
+    }
+    with open(os.path.join(args.save_dir, "test_metrics.json"), "w") as f:
+        json.dump(metrics_dict, f, indent=4)
+    
     # Return results
     model.float()  # for training
 
@@ -126,7 +138,7 @@ def main():
     print(args)
 
     # --- STRATEGY: Define Dynamic Save Directory ---
-    run_name = f"train_{args.version}"
+    run_name = f"test_{args.version}"
     args.save_dir = os.path.join("runs", run_name)
     print(f"Output Directory: {args.save_dir}")
     # -----------------------------------------------
@@ -134,6 +146,10 @@ def main():
     args.local_rank = int(os.getenv('LOCAL_RANK', 0))
     args.world_size = int(os.getenv('WORLD_SIZE', 1))
     args.distributed = int(os.getenv('WORLD_SIZE', 1)) > 1
+
+    if args.local_rank == 0:
+        if not os.path.exists(args.save_dir):
+            os.makedirs(args.save_dir)
 
     with open(args.hyp, errors='ignore') as f:
         params = yaml.safe_load(f)

@@ -37,7 +37,7 @@ def test(args, params, model=None, mode="val"):
                              pin_memory=True, collate_fn=Dataset.collate_fn)
 
     if not model:
-        path = os.path.join(args.save_dir, "best.pt")
+        path = os.path.join("runs", f"train_{version}", "best.pt")
         print(f"Testing model: {path}")
         model = torch.load(f=path, map_location='cuda', weights_only=False)
         model = model['model'].float().fuse()

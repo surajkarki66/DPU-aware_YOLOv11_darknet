@@ -68,8 +68,12 @@ def inference(model, args, params):
         model_latency = start_event.elapsed_time(end_event)
 
         # 3. Post-process (NMS) Timer
+        task = getattr(args, 'task', 'detect')
         t0 = time.time()
-        outputs = util.non_max_suppression(outputs, 0.15, 0.2)[0]
+        if task == 'obb':
+            outputs = util.non_max_suppression_obb(outputs, 0.15, 0.2)[0]
+        else:
+            outputs = util.non_max_suppression(outputs, 0.15, 0.2)[0]
         nms_time = (time.time() - t0) * 1000
         
         # End timing and calculate latency
@@ -80,19 +84,36 @@ def inference(model, args, params):
         total_latency = model_latency + nms_time
         
         if outputs is not None:
-            outputs[:, [0, 2]] -= w
-            outputs[:, [1, 3]] -= h
-            outputs[:, :4] /= min(height / shape[0], width / shape[1])
-            outputs[:, 0].clamp_(0, shape[1])
-            outputs[:, 1].clamp_(0, shape[0])
-            outputs[:, 2].clamp_(0, shape[1])
-            outputs[:, 3].clamp_(0, shape[0])
-            for box in outputs:
-                box = box.cpu().numpy()
-                _, _, _, _, score, index = box
-                class_name = params['names'][int(index)]
-                label = f"{class_name} {score:.2f}"
-                util.draw_box(frame, box, index, label)
+            scale = min(height / shape[0], width / shape[1])
+            if task == 'obb':
+                outputs[:, 0] -= w
+                outputs[:, 1] -= h
+                outputs[:, :4] /= scale
+                outputs[:, 0].clamp_(0, shape[1])
+                outputs[:, 1].clamp_(0, shape[0])
+                outputs[:, 2].clamp_(0, shape[1])
+                outputs[:, 3].clamp_(0, shape[0])
+                for box in outputs:
+                    box = box.cpu().numpy()
+                    xywhr = np.concatenate([box[:4], [box[6]]])
+                    score, cls_idx = box[4], int(box[5])
+                    class_name = params['names'][cls_idx]
+                    label = f"{class_name} {score:.2f}"
+                    util.draw_rotated_box(frame, xywhr, cls_idx, label)
+            else:
+                outputs[:, [0, 2]] -= w
+                outputs[:, [1, 3]] -= h
+                outputs[:, :4] /= scale
+                outputs[:, 0].clamp_(0, shape[1])
+                outputs[:, 1].clamp_(0, shape[0])
+                outputs[:, 2].clamp_(0, shape[1])
+                outputs[:, 3].clamp_(0, shape[0])
+                for box in outputs:
+                    box = box.cpu().numpy()
+                    _, _, _, _, score, index = box
+                    class_name = params['names'][int(index)]
+                    label = f"{class_name} {score:.2f}"
+                    util.draw_box(frame, box, index, label)
 
         # Display latency on the image
         latency_text = f"Model: {model_latency:.1f}ms | NMS: {nms_time:.1f}ms | Total: {total_latency:.1f}ms"
@@ -103,12 +124,7 @@ def inference(model, args, params):
         cv2.destroyAllWindows()
 
     else:
-        # The existing code for video and camera inference (which works)
-        # This part remains unchanged
-        model = torch.load(f'./runs/best.pt', 'cuda', weights_only=False)['model'].float()
-        model.half()
-        model.eval()
-
+        task = getattr(args, 'task', 'detect')
         if source_type == "video":
             camera = cv2.VideoCapture(args.source_path)
         elif source_type == "camera":
@@ -179,8 +195,8 @@ def inference(model, args, params):
 
                 # 2. Inference (GPU)
                 # We use CUDA events for precise GPU timing
-                start_event = torch.Event('cuda', enable_timing=True)
-                end_event = torch.Event('cuda', enable_timing=True)
+                start_event = torch.cuda.Event(enable_timing=True)
+                end_event = torch.cuda.Event(enable_timing=True)
                 
                 start_event.record()
 
@@ -191,7 +207,10 @@ def inference(model, args, params):
                 
                 # 3. NMS (CPU)
                 t_nms_start = time.time()
-                outputs = util.non_max_suppression(outputs, 0.15, 0.2)[0]
+                if task == 'obb':
+                    outputs = util.non_max_suppression_obb(outputs, 0.15, 0.2)[0]
+                else:
+                    outputs = util.non_max_suppression(outputs, 0.15, 0.2)[0]
                 t_nms_end = time.time()
                 # Calculate Latencies
                 preprocess_ms = (t_prep_end - t_prep_start) * 1000
@@ -199,20 +218,37 @@ def inference(model, args, params):
                 e2e_latency_ms = preprocess_ms + inference_time_ms + nms_ms
 
                 # 4. Visualization (CPU - Slow!)
+                scale = min(height / shape[0], width / shape[1])
                 if outputs is not None:
-                    outputs[:, [0, 2]] -= w
-                    outputs[:, [1, 3]] -= h
-                    outputs[:, :4] /= min(height / shape[0], width / shape[1])
-                    outputs[:, 0].clamp_(0, shape[1])
-                    outputs[:, 1].clamp_(0, shape[0])
-                    outputs[:, 2].clamp_(0, shape[1])
-                    outputs[:, 3].clamp_(0, shape[0])
-                    for box in outputs:
-                        box = box.cpu().numpy()
-                        x1, y1, x2, y2, score, index = box
-                        class_name = params['names'][int(index)]
-                        label = f"{class_name} {score:.2f}"
-                        util.draw_box(frame, box, index, label)
+                    if task == 'obb':
+                        outputs[:, 0] -= w
+                        outputs[:, 1] -= h
+                        outputs[:, :4] /= scale
+                        outputs[:, 0].clamp_(0, shape[1])
+                        outputs[:, 1].clamp_(0, shape[0])
+                        outputs[:, 2].clamp_(0, shape[1])
+                        outputs[:, 3].clamp_(0, shape[0])
+                        for box in outputs:
+                            box = box.cpu().numpy()
+                            xywhr = np.concatenate([box[:4], [box[6]]])
+                            score, cls_idx = box[4], int(box[5])
+                            class_name = params['names'][cls_idx]
+                            label = f"{class_name} {score:.2f}"
+                            util.draw_rotated_box(frame, xywhr, cls_idx, label)
+                    else:
+                        outputs[:, [0, 2]] -= w
+                        outputs[:, [1, 3]] -= h
+                        outputs[:, :4] /= scale
+                        outputs[:, 0].clamp_(0, shape[1])
+                        outputs[:, 1].clamp_(0, shape[0])
+                        outputs[:, 2].clamp_(0, shape[1])
+                        outputs[:, 3].clamp_(0, shape[0])
+                        for box in outputs:
+                            box = box.cpu().numpy()
+                            x1, y1, x2, y2, score, index = box
+                            class_name = params['names'][int(index)]
+                            label = f"{class_name} {score:.2f}"
+                            util.draw_box(frame, box, index, label)
                 
                 # fps_text = f"FPS: {fps_display:.2f}"
                 # latency_text = f"Latency: {latency_ms:.2f} ms"
@@ -263,6 +299,10 @@ def main():
     parser = ArgumentParser()
     parser.add_argument('--input-size', default=640, type=int)
     parser.add_argument('--version', default='n', type=str)
+    parser.add_argument('--task', default='detect', type=str, choices=['detect', 'obb'],
+                        help='Task: detect or obb')
+    parser.add_argument('--weights', default='', type=str,
+                        help='Path to full checkpoint best.pt (default: runs/train_<version>/best.pt)')
     parser.add_argument('--source', type=str, choices=["image", "video", "camera"], required=True,
                         help="Inference source: 'image', 'video', or 'camera'")
     parser.add_argument('--source-path', type=str, default='./data/example.jpg',
@@ -285,16 +325,22 @@ def main():
     util.setup_seed()
     util.setup_multi_processes()
 
-    # Load directly from the specific folder
-    model_path = os.path.join(args.save_dir, "best.pt")
+    model_path = (args.weights or os.path.join(args.save_dir, "best.pt")).strip()
     if not os.path.exists(model_path):
         print(f"Error: Model not found at {model_path}")
         return
-    
+
     print(f"Loading model from: {model_path}")
-    model_data = torch.load(model_path, map_location="cuda", weights_only=False)
-    model = model_data["model"].eval().cuda().half()
-    
+    ckpt = torch.load(model_path, map_location="cuda", weights_only=False)
+    if not isinstance(ckpt, dict):
+        print("Error: Only full checkpoint (best.pt with 'model' or 'ema') is supported. State-dict-only files are not supported.")
+        return
+    model = ckpt.get('ema') or ckpt.get('model')
+    if model is None or not isinstance(model, torch.nn.Module):
+        print("Error: Checkpoint must contain 'model' or 'ema' (nn.Module). Use a full best.pt from training.")
+        return
+    model = model.float().fuse().cuda().half().eval()
+
     inference(model, args, params)
 
     torch.cuda.empty_cache()

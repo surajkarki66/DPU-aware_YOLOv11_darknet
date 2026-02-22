@@ -122,6 +122,65 @@ def compute_metric(output, target, iou_v):
     return torch.tensor(correct, dtype=torch.bool, device=output.device)
 
 
+def compute_metric_obb(output, target_cls, target_xywhr, iou_v):
+    """OBB metrics: output (k, 7) [xywh, conf, cls, angle], target_xywhr (m, 5), target_cls (m,). Returns correct (k, 10)."""
+    from utils.obb_utils import batch_probiou, match_predictions_obb
+    if output.shape[0] == 0:
+        return torch.zeros(0, iou_v.numel(), dtype=torch.bool, device=output.device)
+    pred_xywhr = torch.cat([output[:, :4], output[:, 6:7]], dim=-1)
+    pred_cls = output[:, 5].cpu().numpy().astype(int)
+    gt_cls_np = target_cls.cpu().numpy().astype(int) if hasattr(target_cls, 'cpu') else numpy.asarray(target_cls, dtype=int)
+    if target_xywhr.shape[0] == 0:
+        return torch.zeros(output.shape[0], iou_v.numel(), dtype=torch.bool, device=output.device)
+    iou_m = batch_probiou(pred_xywhr, target_xywhr)
+    if iou_m.dim() == 1:
+        iou_m = iou_m.unsqueeze(1)
+    correct = match_predictions_obb(pred_cls, gt_cls_np, iou_m, iou_v.cpu().numpy())
+    return torch.tensor(correct, dtype=torch.bool, device=output.device)
+
+
+def nms_rotated(boxes, scores, threshold=0.45):
+    """Rotated NMS: boxes (n, 5) xywhr, scores (n,). Returns indices to keep."""
+    if len(boxes) == 0:
+        return torch.empty(0, dtype=torch.long, device=boxes.device)
+    from utils.obb_utils import batch_probiou
+    sorted_idx = torch.argsort(scores, descending=True)
+    boxes = boxes[sorted_idx]
+    ious = batch_probiou(boxes, boxes).triu_(diagonal=1)
+    pick = torch.nonzero(ious.max(dim=0)[0] < threshold).squeeze(-1)
+    return sorted_idx[pick]
+
+
+def non_max_suppression_obb(outputs, confidence_threshold=0.001, iou_threshold=0.45):
+    """OBB NMS: outputs (b, N, 4+nc+1) = [xywh, cls_scores..., angle] (YOLOv8 layout). Returns list of (k, 7) [xywh, conf, cls, angle]."""
+    max_det = 300
+    max_nms = 30000
+    bs = outputs.shape[0]
+    nc = outputs.shape[-1] - 5
+    out_list = [torch.zeros((0, 7), device=outputs.device, dtype=outputs.dtype)] * bs
+    pred = outputs.permute(0, 2, 1)
+    for xi, x in enumerate(pred):
+        xc = x[4:4 + nc].amax(0) > confidence_threshold
+        x = x[:, xc].T
+        if not x.shape[0]:
+            continue
+        box = x[:, :4]
+        cls = x[:, 4:4 + nc]
+        angle = x[:, -1:]
+        conf, j = cls.max(1, keepdim=True)
+        x = torch.cat((box, conf, j.float(), angle), 1)[conf.view(-1) > confidence_threshold]
+        n = x.shape[0]
+        if not n:
+            continue
+        x = x[x[:, 4].argsort(descending=True)[:max_nms]]
+        scores = x[:, 4]
+        xywhr = torch.cat((x[:, :4], x[:, -1:]), dim=-1)
+        i = nms_rotated(xywhr, scores, iou_threshold)
+        i = i[:max_det]
+        out_list[xi] = x[i]
+    return out_list
+
+
 def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.65):
     max_wh = 7680
     max_det = 300
@@ -718,6 +777,113 @@ class BoxLoss(torch.nn.Module):
         return (left_loss * wl + right_loss * wr).mean(-1, keepdim=True)
 
 
+def _select_candidates_in_gts_rotated(xy_centers, gt_bboxes):
+    """Point-in-rotated-box: xy_centers (na, 2), gt_bboxes (b, max_obj, 5). Returns (b, max_obj, na)."""
+    from utils.obb_utils import xywhr2xyxyxyxy
+    corners = xywhr2xyxyxyxy(gt_bboxes)  # (b, max_obj, 4, 2)
+    a, b, _, d = corners.split(1, dim=-2)  # each (b, max_obj, 1, 2)
+    ab = b - a
+    ad = d - a
+    # xy_centers (na, 2) -> (1, 1, na, 2) for broadcast
+    ap = xy_centers.unsqueeze(0).unsqueeze(0) - a  # (b, max_obj, na, 2)
+    norm_ab = (ab * ab).sum(dim=-1)  # (b, max_obj, 1)
+    norm_ad = (ad * ad).sum(dim=-1)
+    ap_dot_ab = (ap * ab).sum(dim=-1)  # (b, max_obj, na)
+    ap_dot_ad = (ap * ad).sum(dim=-1)
+    is_in_box = (ap_dot_ab >= 0) & (ap_dot_ab <= norm_ab) & (ap_dot_ad >= 0) & (ap_dot_ad <= norm_ad)
+    return is_in_box
+
+
+class RotatedAssigner(torch.nn.Module):
+    """Task-aligned assigner for OBB: uses probiou and point-in-rotated-box."""
+    def __init__(self, nc=80, top_k=10, alpha=0.5, beta=6.0, eps=1e-9):
+        super().__init__()
+        self.top_k = top_k
+        self.nc = nc
+        self.alpha = alpha
+        self.beta = beta
+        self.eps = eps
+
+    @torch.no_grad()
+    def forward(self, pd_scores, pd_bboxes, anc_points, gt_labels, gt_bboxes, mask_gt):
+        from utils.obb_utils import probiou
+        batch_size = pd_scores.size(0)
+        num_max_boxes = gt_bboxes.size(1)
+        if num_max_boxes == 0:
+            device = gt_bboxes.device
+            return (torch.zeros_like(pd_bboxes).to(device),
+                    torch.zeros_like(pd_scores).to(device),
+                    torch.zeros_like(pd_scores[..., 0]).to(device))
+        num_anchors = anc_points.shape[0]
+        shape = gt_bboxes.shape
+        mask_in_gts = _select_candidates_in_gts_rotated(anc_points, gt_bboxes)
+        na = pd_bboxes.shape[-2]
+        gt_mask = (mask_in_gts * mask_gt).bool()
+        overlaps = torch.zeros([batch_size, num_max_boxes, na], dtype=pd_bboxes.dtype, device=pd_bboxes.device)
+        bbox_scores = torch.zeros([batch_size, num_max_boxes, na], dtype=pd_scores.dtype, device=pd_scores.device)
+        ind = torch.zeros([2, batch_size, num_max_boxes], dtype=torch.long)
+        ind[0] = torch.arange(end=batch_size).view(-1, 1).expand(-1, num_max_boxes)
+        ind[1] = gt_labels.squeeze(-1)
+        bbox_scores[gt_mask] = pd_scores[ind[0], :, ind[1]][gt_mask]
+        pd_boxes = pd_bboxes.unsqueeze(1).expand(-1, num_max_boxes, -1, -1)[gt_mask]
+        gt_boxes = gt_bboxes.unsqueeze(2).expand(-1, -1, na, -1)[gt_mask]
+        overlaps[gt_mask] = probiou(gt_boxes, pd_boxes).squeeze(-1).clamp_(0)
+        align_metric = bbox_scores.pow(self.alpha) * overlaps.pow(self.beta)
+        top_k_mask = mask_gt.expand(-1, -1, self.top_k).bool()
+        top_k_metrics, top_k_indices = torch.topk(align_metric, self.top_k, dim=-1, largest=True)
+        top_k_indices.masked_fill_(~top_k_mask, 0)
+        mask_top_k = torch.zeros(align_metric.shape, dtype=torch.int8, device=top_k_indices.device)
+        ones = torch.ones_like(top_k_indices[:, :, :1], dtype=torch.int8, device=top_k_indices.device)
+        for k in range(self.top_k):
+            mask_top_k.scatter_add_(-1, top_k_indices[:, :, k:k + 1], ones)
+        mask_top_k.masked_fill_(mask_top_k > 1, 0)
+        mask_top_k = mask_top_k.to(align_metric.dtype)
+        mask_pos = mask_top_k * mask_in_gts * mask_gt
+        fg_mask = mask_pos.sum(-2)
+        if fg_mask.max() > 1:
+            mask_multi_gts = (fg_mask.unsqueeze(1) > 1).expand(-1, num_max_boxes, -1)
+            max_overlaps_idx = overlaps.argmax(1)
+            is_max_overlaps = torch.zeros(mask_pos.shape, dtype=mask_pos.dtype, device=mask_pos.device)
+            is_max_overlaps.scatter_(1, max_overlaps_idx.unsqueeze(1), 1)
+            mask_pos = torch.where(mask_multi_gts, is_max_overlaps, mask_pos).float()
+            fg_mask = mask_pos.sum(-2)
+        target_gt_idx = mask_pos.argmax(-2)
+        index = torch.arange(end=batch_size, dtype=torch.int64, device=gt_labels.device)[..., None]
+        target_index = target_gt_idx + index * num_max_boxes
+        target_labels = gt_labels.long().flatten()[target_index]
+        target_bboxes = gt_bboxes.view(-1, gt_bboxes.shape[-1])[target_index]
+        target_labels.clamp_(0)
+        target_scores = torch.zeros((target_labels.shape[0], target_labels.shape[1], self.nc),
+                                    dtype=torch.int64, device=target_labels.device)
+        target_scores.scatter_(2, target_labels.unsqueeze(-1), 1)
+        fg_scores_mask = fg_mask[:, :, None].repeat(1, 1, self.nc)
+        target_scores = torch.where(fg_scores_mask > 0, target_scores, 0)
+        align_metric *= mask_pos
+        pos_align_metrics = align_metric.amax(dim=-1, keepdim=True)
+        pos_overlaps = (overlaps * mask_pos).amax(dim=-1, keepdim=True)
+        norm_align_metric = (align_metric * pos_overlaps / (pos_align_metrics + self.eps)).amax(-2).unsqueeze(-1)
+        target_scores = target_scores * norm_align_metric
+        return target_bboxes, target_scores, fg_mask.bool()
+
+
+class RotatedBoxLoss(torch.nn.Module):
+    """Box loss for OBB: ProbIoU + DFL (target from xywhr -> xyxy for DFL)."""
+    def __init__(self, dfl_ch):
+        super().__init__()
+        self.dfl_ch = dfl_ch
+
+    def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
+        from utils.obb_utils import probiou, xywh2xyxy, bbox2dist
+        weight = torch.masked_select(target_scores.sum(-1), fg_mask).unsqueeze(-1)
+        iou = probiou(pred_bboxes[fg_mask], target_bboxes[fg_mask])
+        loss_box = ((1.0 - iou) * weight).sum() / target_scores_sum
+        target_xyxy = xywh2xyxy(target_bboxes[..., :4])
+        target_ltrb = bbox2dist(anchor_points, target_xyxy, self.dfl_ch)
+        loss_dfl = BoxLoss.df_loss(pred_dist[fg_mask].view(-1, self.dfl_ch + 1), target_ltrb[fg_mask])
+        loss_dfl = (loss_dfl * weight).sum() / target_scores_sum
+        return loss_box, loss_dfl
+
+
 class ComputeLoss:
     def __init__(self, model, params):
         if hasattr(model, 'module'):
@@ -818,7 +984,104 @@ class ComputeLoss:
         loss_dfl *= self.params['dfl']  # dfl gain
 
         return loss_box, loss_cls, loss_dfl
-    
+
+
+class ComputeLossOBB:
+    """Loss for YOLOv11-OBB (oriented bounding box). Uses RotatedAssigner and RotatedBoxLoss."""
+    def __init__(self, model, params):
+        if hasattr(model, 'module'):
+            model = model.module
+        device = next(model.parameters()).device
+        m = model.head  # OBBHead
+        self.params = params
+        self.stride = m.stride
+        self.nc = m.nc
+        self.no = m.no
+        self.reg_max = m.ch
+        self.device = device
+        self.box_loss = RotatedBoxLoss(m.ch - 1).to(device)
+        self.cls_loss = torch.nn.BCEWithLogitsLoss(reduction='none')
+        self.assigner = RotatedAssigner(nc=self.nc, top_k=10, alpha=0.5, beta=6.0)
+        self.project = torch.arange(m.ch, dtype=torch.float, device=device)
+
+    def _preprocess(self, targets, batch_size, scale_tensor):
+        if targets.shape[0] == 0:
+            return torch.zeros(batch_size, 0, 6, device=self.device)
+        i = targets[:, 0]
+        _, counts = i.unique(return_counts=True)
+        counts = counts.to(dtype=torch.int32)
+        out = torch.zeros(batch_size, counts.max(), 6, device=self.device)
+        for j in range(batch_size):
+            matches = i == j
+            n = matches.sum()
+            if n:
+                bboxes = targets[matches, 2:]
+                bboxes[..., :4].mul_(scale_tensor)
+                out[j, :n] = torch.cat([targets[matches, 1:2], bboxes], dim=-1)
+        return out
+
+    def _bbox_decode(self, anchor_points, pred_dist, pred_angle):
+        from utils.obb_utils import dist2rbox
+        b, a, c = pred_dist.shape
+        pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(self.project.type(pred_dist.dtype).to(pred_dist.device))
+        pred_dist = pred_dist.permute(0, 2, 1)  # (b, 4, a) for dist2rbox
+        pred_angle = pred_angle.permute(0, 2, 1)  # (b, a, 1) -> (b, 1, a) for dist2rbox
+        rbox = torch.cat((dist2rbox(pred_dist, pred_angle, anchor_points, dim=1), pred_angle), dim=1)  # (b, 5, a)
+        return rbox.permute(0, 2, 1)  # (b, a, 5)
+
+    def __call__(self, outputs, targets):
+        feats, pred_angle = outputs
+        batch_size = pred_angle.shape[0]
+        pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], dim=2).split(
+            (self.reg_max * 4, self.nc), dim=1)
+        pred_scores = pred_scores.permute(0, 2, 1).contiguous()
+        pred_distri = pred_distri.permute(0, 2, 1).contiguous()
+        pred_angle = pred_angle.permute(0, 2, 1).contiguous()
+        dtype = pred_scores.dtype
+        imgsz = torch.tensor(outputs[0][0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]
+        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+        idx = targets['idx'].view(-1, 1)
+        cls = targets['cls'].view(-1, 1)
+        box = targets['box']  # (N, 5) xywhr normalized
+        if box.shape[0] == 0:
+            gt = torch.zeros(batch_size, 0, 6, device=self.device)
+        else:
+            targets_cat = torch.cat((idx, cls, box), dim=1).to(self.device)  # (N, 7): idx, cls, cx, cy, w, h, angle
+            rw = targets_cat[:, 4] * imgsz[0].item()
+            rh = targets_cat[:, 5] * imgsz[1].item()
+            targets_cat = targets_cat[(rw >= 2) & (rh >= 2)]
+            gt = self._preprocess(targets_cat, batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+        gt_labels, gt_bboxes = gt.split((1, 5), 2)
+        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
+        pred_bboxes = self._bbox_decode(anchor_points, pred_distri, pred_angle)
+        bboxes_for_assigner = pred_bboxes.clone().detach()
+        bboxes_for_assigner[..., :4] *= stride_tensor
+        target_bboxes, target_scores, fg_mask = self.assigner(
+            pred_scores.detach().sigmoid(),
+            bboxes_for_assigner.type(gt_bboxes.dtype),
+            anchor_points * stride_tensor,
+            gt_labels,
+            gt_bboxes,
+            mask_gt)
+        target_scores_sum = max(target_scores.sum(), 1)
+        loss_cls = self.cls_loss(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+        loss_box = torch.zeros(1, device=self.device)
+        loss_dfl = torch.zeros(1, device=self.device)
+        if fg_mask.sum():
+            target_bboxes[..., :4] /= stride_tensor
+            loss_box, loss_dfl = self.box_loss(pred_distri, pred_bboxes, anchor_points,
+                                               target_bboxes, target_scores, target_scores_sum, fg_mask)
+        loss_box *= self.params['box']
+        loss_cls *= self.params['cls']
+        loss_dfl *= self.params['dfl']
+        return loss_box, loss_cls, loss_dfl
+
+    @staticmethod
+    def obb_targets_from_batch(batch):
+        """Build OBB targets dict from batch with keys idx, cls, box (N, 5 xywhr)."""
+        return {'idx': batch['idx'], 'cls': batch['cls'], 'box': batch['box']}
+
+
 class Colors:
     def __init__(self):
         hexs = (
@@ -873,5 +1136,28 @@ def draw_box(im, box, index, label=""):
                 cv2.line(im, center, pt, (0, 255, 255), 3)
 
         cv2.putText(im, label, (x1, y1 + h - 3 if outside else y1 - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    return im
+
+
+def draw_rotated_box(im, xywhr, index, label=""):
+    """Draw OBB from xywhr (x, y, w, h, angle_rad). xywhr: length-5 array or tensor."""
+    import cv2
+    from utils.obb_utils import xywhr2xyxyxyxy
+    t = torch.as_tensor(xywhr[:5], dtype=torch.float32).unsqueeze(0)
+    corners = xywhr2xyxyxyxy(t).squeeze(0).cpu().numpy()
+    pts = corners.astype(numpy.int32).reshape((-1, 1, 2))
+    color = Colors()(index, True)
+    cv2.polylines(im, [pts], isClosed=True, color=color, thickness=2, lineType=cv2.LINE_AA)
+    if label:
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
+        th += 3
+        x1, y1 = int(corners[:, 0].min()), int(corners[:, 1].min())
+        outside = y1 < th + 3
+        if x1 + tw > im.shape[1]:
+            x1 = im.shape[1] - tw
+        y2_label = y1 + th if outside else y1 - th
+        cv2.rectangle(im, (x1, y1), (x1 + tw, y2_label), color, -1)
+        cv2.putText(im, label, (x1, y1 + th - 3 if outside else y1 - 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
     return im

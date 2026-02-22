@@ -2,6 +2,7 @@ import math
 import torch
 
 from utils.util import make_anchors
+from utils.obb_utils import dist2rbox
 
 
 def get_activation(act='silu'):
@@ -354,4 +355,98 @@ class Head(torch.nn.Module):
             # box
             box[-1].bias.data[:] = 1.0
             # cls (.01 objects, 80 classes, 640 image)
+            cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (self.imgsz / s) ** 2)
+
+
+class OBBHead(torch.nn.Module):
+    """OBB head (oriented bounding box): box + cls + angle branches."""
+    anchors = torch.empty(0)
+    strides = torch.empty(0)
+
+    def __init__(self, nc=80, filters=(), ne=1, exclude_post_process=False, act='silu', imgsz=640):
+        super().__init__()
+        self.ch = 16  # DFL channels (reg_max)
+        self.nc = nc
+        self.ne = ne
+        self.nl = len(filters)
+        self.no = nc + self.ch * 4  # box regression + class
+        self.stride = torch.zeros(self.nl)
+        self.exclude_post_process = exclude_post_process
+        self.imgsz = imgsz
+
+        box = max(64, filters[0] // 4)
+        cls = max(80, filters[0], self.nc)
+        angle_ch = max(filters[0] // 4, self.ne)
+
+        if not exclude_post_process:
+            self.dfl = DFL(self.ch)
+        else:
+            self.dfl = None
+
+        self.box = torch.nn.ModuleList(torch.nn.Sequential(
+            Conv(x, box, get_activation(act), k=3, p=1),
+            Conv(box, box, get_activation(act), k=3, p=1),
+            torch.nn.Conv2d(box, out_channels=4 * self.ch, kernel_size=1)) for x in filters)
+        self.cls = torch.nn.ModuleList(torch.nn.Sequential(
+            Conv(x, x, get_activation(act), k=3, p=1, g=x),
+            Conv(x, cls, get_activation(act)),
+            Conv(cls, cls, get_activation(act), k=3, p=1, g=cls),
+            Conv(cls, cls, get_activation(act)),
+            torch.nn.Conv2d(cls, out_channels=self.nc, kernel_size=1)) for x in filters)
+        self.angle = torch.nn.ModuleList(torch.nn.Sequential(
+            Conv(x, angle_ch, get_activation(act), k=3, p=1),
+            Conv(angle_ch, angle_ch, get_activation(act), k=3, p=1),
+            torch.nn.Conv2d(angle_ch, out_channels=self.ne, kernel_size=1)) for x in filters)
+
+    def forward(self, x):
+        bs = x[0].shape[0]
+        # Angle branch: raw logits per scale
+        angle_list = [self.angle[i](x[i]) for i in range(self.nl)]
+        pred_angle_raw = torch.cat([a.view(bs, self.ne, -1) for a in angle_list], dim=2)
+
+        # Box + cls
+        for i, (box, cls) in enumerate(zip(self.box, self.cls)):
+            x[i] = torch.cat(tensors=(box(x[i]), cls(x[i])), dim=1)
+
+        if self.exclude_post_process:
+            # 6 outputs: 3 detection (box+cls raw) + 3 angle raw (one per scale); sigmoid on CPU
+            return x[0], x[1], x[2], angle_list[0], angle_list[1], angle_list[2]
+
+        # Full decode / training: sigmoid + decode for _decode_bboxes
+        pred_angle = (pred_angle_raw.sigmoid() - 0.25) * math.pi
+        if not self.training:
+            self._angle = pred_angle  # for decode_bboxes in inference
+
+        if self.training:
+            return x, pred_angle
+
+        self.anchors, self.strides_t = (i.transpose(0, 1) for i in make_anchors(x, self.stride))
+        x = torch.cat([i.view(x[0].shape[0], self.no, -1) for i in x], dim=2)
+        box_raw, cls_logits = x.split(split_size=(4 * self.ch, self.nc), dim=1)
+        # Decode to xywhr and scale by stride
+        pred_xywh = self._decode_bboxes(box_raw)
+        # pred_xywh (b, 4, N), stride (1, N); scale center and wh
+        pred_xywh = pred_xywh.permute(0, 2, 1)  # (b, N, 4)
+        pred_xywh = pred_xywh * self.strides_t.unsqueeze(-1)
+        angle_cat = pred_angle.permute(0, 2, 1)  # (b, N, 1)
+        cls_sigmoid = cls_logits.permute(0, 2, 1).sigmoid()
+        return torch.cat((pred_xywh, cls_sigmoid, angle_cat), dim=-1)  # (b, N, 4+nc+1) [xywh, cls..., angle] YOLOv8 layout
+
+    def _decode_bboxes(self, box_raw):
+        """box_raw (B, 4*ch, N); use DFL then dist2rbox with stored angle."""
+        b, _, a = box_raw.shape
+        if self.dfl is not None:
+            box_dist = self.dfl(box_raw)  # DFL expects (b, 4*ch, a), returns (b, 4, a)
+        else:
+            box_dist = box_raw.view(b, 4, self.ch, a).mean(2)  # (b, 4, a)
+        # dist2rbox expects (pred_dist, pred_angle, anchor_points, dim=1)
+        # pred_dist (b, 4, a), pred_angle (b, 1, a), anchors (1, a, 2) or (a, 2)
+        angle = self._angle  # (b, 1, a)
+        anchors = self.anchors.unsqueeze(0)  # (1, a, 2)
+        rbox = dist2rbox(box_dist, angle, anchors, dim=1)  # (b, 4, a)
+        return rbox
+
+    def initialize_biases(self):
+        for box, cls, s in zip(self.box, self.cls, self.stride):
+            box[-1].bias.data[:] = 1.0
             cls[-1].bias.data[:self.nc] = math.log(5 / self.nc / (self.imgsz / s) ** 2)

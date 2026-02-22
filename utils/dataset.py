@@ -433,3 +433,96 @@ class Albumentations:
             box = numpy.array(x['bboxes'])
             cls = numpy.array(x['class_labels'])
         return image, box, cls
+
+
+def _corners_to_xywhr_numpy(corners):
+    """Convert 4 corners (n, 8) normalized 0-1 to xywhr (n, 5)."""
+    from utils.obb_utils import xyxyxyxy2xywhr
+    return xyxyxyxy2xywhr(corners)
+
+
+class OBBDataset(data.Dataset):
+    """Dataset for OBB: label format = class_id x1 y1 x2 y2 x3 y3 x4 y4 (normalized 0-1). Returns box as (n, 5) xywhr."""
+    def __init__(self, filenames, input_size, params, augment):
+        self.params = params
+        self.mosaic = False
+        self.augment = augment
+        self.input_size = input_size
+        labels = self._load_labels(filenames)
+        self.labels = list(labels.values())
+        self.filenames = list(labels.keys())
+        self.n = len(self.filenames)
+        self.indices = range(self.n)
+
+    def _load_labels(self, filenames):
+        x = {}
+        for filename in tqdm(filenames):
+            try:
+                with open(filename, 'rb') as f:
+                    image = Image.open(f)
+                    image.verify()
+                shape = image.size
+                w, h = shape[0], shape[1]
+                a, b = 'images', 'labels'
+                file_txt = filename.replace(a, b).rsplit('.', 1)[0] + '.txt'
+                if os.path.isfile(file_txt):
+                    with open(file_txt) as f:
+                        lines = [line.split() for line in f.read().strip().splitlines() if line.strip()]
+                    label = numpy.array(lines, dtype=numpy.float32) if lines else numpy.zeros((0, 9), dtype=numpy.float32)
+                    if label.size and label.shape[1] >= 9:
+                        cls = label[:, 0:1]
+                        corners = label[:, 1:9]
+                        xywhr = _corners_to_xywhr_numpy(corners)
+                        label = numpy.concatenate([cls, xywhr], axis=1)
+                    elif label.size and label.shape[1] == 5:
+                        label = numpy.concatenate([label[:, :5], numpy.zeros((len(label), 1), dtype=numpy.float32)], axis=1)
+                    else:
+                        label = numpy.zeros((0, 6), dtype=numpy.float32)
+                else:
+                    label = numpy.zeros((0, 6), dtype=numpy.float32)
+            except Exception:
+                label = numpy.zeros((0, 6), dtype=numpy.float32)
+            x[filename] = label
+        return x
+
+    def __getitem__(self, index):
+        index = self.indices[index]
+        image, (orig_h, orig_w) = self._load_image(index)
+        h, w = image.shape[:2]
+        image, ratio, pad = resize(image, self.input_size, self.augment)
+        pad_w, pad_h = pad[0], pad[1]
+        r = ratio[0] if hasattr(ratio, '__len__') else ratio
+        label = self.labels[index].copy()
+        nl = len(label)
+        if nl and label.shape[1] >= 6:
+            cls = label[:, 0:1]
+            box = label[:, 1:6]
+            box[:, 0] = (box[:, 0] * orig_w * r + pad_w) / self.input_size
+            box[:, 1] = (box[:, 1] * orig_h * r + pad_h) / self.input_size
+            box[:, 2] = box[:, 2] * orig_w * r / self.input_size
+            box[:, 3] = box[:, 3] * orig_h * r / self.input_size
+        else:
+            cls = numpy.zeros((0, 1), dtype=numpy.float32)
+            box = numpy.zeros((0, 5), dtype=numpy.float32)
+        sample = image.transpose((2, 0, 1))[::-1]
+        sample = numpy.ascontiguousarray(sample)
+        return torch.from_numpy(sample), torch.from_numpy(cls), torch.from_numpy(box.astype(numpy.float32)), torch.zeros(nl, dtype=torch.long)
+    def __len__(self):
+        return self.n
+
+    def _load_image(self, i):
+        image = cv2.imread(self.filenames[i])
+        h, w = image.shape[:2]
+        r = self.input_size / max(h, w)
+        if r != 1:
+            image = cv2.resize(image, (int(w * r), int(h * r)), interpolation=cv2.INTER_LINEAR)
+        return image, (h, w)
+
+    @staticmethod
+    def collate_fn(batch):
+        samples, cls, box, indices = zip(*batch)
+        cls = torch.cat(cls, dim=0)
+        box = torch.cat(box, dim=0)
+        new_indices = [indices[i] + i for i in range(len(indices))]
+        indices = torch.cat(new_indices, dim=0)
+        return torch.stack(samples, dim=0), {'cls': cls, 'box': box, 'idx': indices}

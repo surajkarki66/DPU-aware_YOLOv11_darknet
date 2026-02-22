@@ -12,7 +12,7 @@ from datetime import datetime
 
 from models.yolo import *
 from utils import util
-from utils.dataset import Dataset
+from utils.dataset import Dataset, OBBDataset
 
 warnings.filterwarnings("ignore")
 
@@ -23,33 +23,38 @@ def train(args, params):
     # Model
     version = args.version
     activation = args.activation
-    
-    if version == 'n':
-        model = yolo_v11_n(len(params['names']), 
-                              exclude_post_process=False,
-                              activation=activation)  
-    elif version == 't':
-        model = yolo_v11_t(len(params['names']),
-                              exclude_post_process=False,
-                              activation=activation)
-    elif version == 's':
-        model = yolo_v11_s(len(params['names']),
-                              exclude_post_process=False,
-                              activation=activation)
-    elif version == 'm':
-        model = yolo_v11_m(len(params['names']),
-                              exclude_post_process=False,
-                              activation=activation)
-    elif version == 'l':
-        model = yolo_v11_l(len(params['names']),
-                              exclude_post_process=False,
-                              activation=activation)
-    elif version == 'x':
-        model = yolo_v11_x(len(params['names']),
-                              exclude_post_process=False,
-                              activation=activation)
+    task = getattr(args, 'task', 'detect')
+
+    if task == 'obb':
+        if version == 'n':
+            model = yolo_v11_n_obb(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 't':
+            model = yolo_v11_t_obb(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 's':
+            model = yolo_v11_s_obb(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 'm':
+            model = yolo_v11_m_obb(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 'l':
+            model = yolo_v11_l_obb(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 'x':
+            model = yolo_v11_x_obb(len(params['names']), exclude_post_process=False, activation=activation)
+        else:
+            raise ValueError(f"Unsupported YOLOv11 variant: {version}. For OBB use 'n', 't', 's', 'm', 'l', 'x'.")
     else:
-        raise ValueError(f"Unsupported YOLOv11 variant: {version}. Choose from 'n', 's', 'm', 'l', 'x', 't'.")
+        if version == 'n':
+            model = yolo_v11_n(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 't':
+            model = yolo_v11_t(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 's':
+            model = yolo_v11_s(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 'm':
+            model = yolo_v11_m(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 'l':
+            model = yolo_v11_l(len(params['names']), exclude_post_process=False, activation=activation)
+        elif version == 'x':
+            model = yolo_v11_x(len(params['names']), exclude_post_process=False, activation=activation)
+        else:
+            raise ValueError(f"Unsupported YOLOv11 variant: {version}. Choose from 'n', 's', 'm', 'l', 'x', 't'.")
 
     model.cuda()
 
@@ -84,14 +89,19 @@ def train(args, params):
     print(f"Number of non-existing files: {nonexisting_count}")
 
     sampler = None
-    dataset = Dataset(filenames, args.input_size, params, augment=True)
+    if task == 'obb':
+        dataset = OBBDataset(filenames, args.input_size, params, augment=True)
+        collate_fn = OBBDataset.collate_fn
+    else:
+        dataset = Dataset(filenames, args.input_size, params, augment=True)
+        collate_fn = Dataset.collate_fn
 
     if args.distributed:
         sampler = data.distributed.DistributedSampler(dataset)
-    
+
     # loading data
     loader = data.DataLoader(dataset, args.batch_size, sampler is None, sampler,
-                             num_workers=8, pin_memory=True, collate_fn=Dataset.collate_fn)
+                             num_workers=8, pin_memory=True, collate_fn=collate_fn)
 
     # Scheduler
     num_steps = len(loader)
@@ -106,7 +116,7 @@ def train(args, params):
 
     best = 0
     amp_scale = torch.amp.GradScaler()
-    criterion = util.ComputeLoss(model, params)
+    criterion = util.ComputeLossOBB(model, params) if task == 'obb' else util.ComputeLoss(model, params)
 
     # Use args.save_dir ---
     csv_file = os.path.join(args.save_dir, 'results.csv')
@@ -291,6 +301,8 @@ def main():
     parser.add_argument('--hyp', default='data/hyps/args.yaml', type=str,
                         help='Path to YAML config file')
     parser.add_argument('--zip', action='store_true')
+    parser.add_argument('--task', default='detect', type=str, choices=('detect', 'obb'),
+                        help='Task: detect (default) or obb (oriented bounding box)')
 
     args = parser.parse_args()
     print(args)

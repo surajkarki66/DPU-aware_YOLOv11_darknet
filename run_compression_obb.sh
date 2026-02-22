@@ -5,14 +5,15 @@ MODEL_PATH="./best.pt"
 VERSION="n"
 NUM_CLASSES=1
 ACTIVATION="relu"
+TASK="obb"
 TARGET="DPUCZDX8G_ISA1_B4096"
 IMG_SIZE=416
 
 echo "========================================"
-echo "YOLOv11 DPU Quantization Workflow"
+echo "YOLOv11-OBB DPU Quantization Workflow"
 echo "========================================"
 echo "Model: $MODEL_PATH"
-echo "Version: YOLOv11-$VERSION"
+echo "Version: YOLOv11-$VERSION ($TASK)"
 echo "Classes: $NUM_CLASSES"
 echo "Activation: $ACTIVATION"
 echo "Target DPU: $TARGET"
@@ -27,6 +28,7 @@ python vai_quantize.py \
     --version "$VERSION" \
     --num_classes $NUM_CLASSES \
     --activation "$ACTIVATION" \
+    --task "$TASK" \
     --batch_size 16 \
     --img_height $IMG_SIZE \
     --img_width $IMG_SIZE \
@@ -49,6 +51,7 @@ python vai_quantize.py \
     --version "$VERSION" \
     --num_classes $NUM_CLASSES \
     --activation "$ACTIVATION" \
+    --task "$TASK" \
     --batch_size 1 \
     --img_height $IMG_SIZE \
     --img_width $IMG_SIZE \
@@ -71,6 +74,7 @@ python vai_quantize.py \
     --version "$VERSION" \
     --num_classes $NUM_CLASSES \
     --activation "$ACTIVATION" \
+    --task "$TASK" \
     --batch_size 1 \
     --subset_len 1 \
     --img_height $IMG_SIZE \
@@ -88,7 +92,7 @@ echo "✓ Deployment export complete"
 sleep 2
 
 # Rename quantize_result directory with model info
-RESULT_DIR="quantize_result_yolov11${VERSION}_${IMG_SIZE}_${TARGET##*_}"
+RESULT_DIR="quantize_result_yolov11${VERSION}_obb_${IMG_SIZE}_${TARGET##*_}"
 echo ""
 echo "Organizing results..."
 if [ -d "quantize_result" ]; then

@@ -15,10 +15,14 @@ torch.cuda.manual_seed(0)
 
 import glob
 import math
+
 from pathlib import Path
 from tqdm import tqdm
 
-from models.yolo import yolo_v11_n, yolo_v11_s, yolo_v11_m, yolo_v11_l, yolo_v11_x
+from models.yolo import (
+    yolo_v11_n, yolo_v11_s, yolo_v11_m, yolo_v11_l, yolo_v11_x,
+    yolo_v11_n_obb, yolo_v11_s_obb, yolo_v11_m_obb, yolo_v11_l_obb, yolo_v11_x_obb,
+)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -35,6 +39,14 @@ parser.add_argument(
     default='n',
     type=str,
     help='YOLOv11 variant (n, s, m, l, x) - only needed if loading from state_dict'
+)
+
+parser.add_argument(
+    '--task',
+    default='detect',
+    type=str,
+    choices=['detect', 'obb'],
+    help='Task: detect or obb (oriented bounding box)'
 )
 
 parser.add_argument(
@@ -112,27 +124,21 @@ args, _ = parser.parse_known_args()
 def run_model_exports(model):
     """
     Export model configuration for CPU-side post-processing.
+    Supports both detect and obb heads; saves task so deploy can choose NMS/decoding.
     """
-    
-    # Extract parameters from model head
     head = model.head
-    tensor_no = int(head.no)              # Total outputs per anchor (nc + ch*4)
-    tensor_stride = head.stride.tolist()  # Stride for each detection layer [8, 16, 32]
-    tensor_ch = int(head.ch)              # DFL channels (16)
-    tensor_nc = int(head.nc)              # Number of classes
-    
-    # Create output directory if not exists
+    tensor_no = int(head.no)
+    tensor_stride = head.stride.tolist()
+    tensor_ch = int(head.ch)
+    tensor_nc = int(head.nc)
+    task = getattr(model, 'task', 'detect')
+
     os.makedirs("quantize_result", exist_ok=True)
-    
-    # Extract model name from path
     model_name = os.path.basename(args.model_path).replace('.pt', '')
-    
-    # Save as pickle - only parameters, not layer objects
     pkl_path = f"quantize_result/{model_name}_config.pkl"
     with open(pkl_path, 'wb') as f:
-        pickle.dump((tensor_no, tensor_stride, tensor_ch, tensor_nc), f)
-    print(f"✓ Saved config pickle: {pkl_path}")
-    
+        pickle.dump((tensor_no, tensor_stride, tensor_ch, tensor_nc, task), f)
+    print(f"✓ Saved config pickle: {pkl_path} (task={task})")
     return
 
 
@@ -228,7 +234,7 @@ def experimental(model):
         _ = model(batch_tensor)
     print("Done")
 
-def load_model(model_path, version='n', num_classes=1, activation='relu'):
+def load_model(model_path, version='n', num_classes=1, activation='relu', task='detect'):
     """
     Load YOLOv11 model by creating architecture and loading state_dict.
     Always creates a DPU-compatible model with exclude_post_process=True.
@@ -239,19 +245,33 @@ def load_model(model_path, version='n', num_classes=1, activation='relu'):
         raise FileNotFoundError(f"Model file not found: {model_path}")
     
     # Create model architecture
-    print(f"Creating YOLOv11-{version} architecture (DPU-compatible mode)...")
-    if version == 'n':
-        model = yolo_v11_n(num_classes, exclude_post_process=True, activation=activation)
-    elif version == 's':
-        model = yolo_v11_s(num_classes, exclude_post_process=True, activation=activation)
-    elif version == 'm':
-        model = yolo_v11_m(num_classes, exclude_post_process=True, activation=activation)
-    elif version == 'l':
-        model = yolo_v11_l(num_classes, exclude_post_process=True, activation=activation)
-    elif version == 'x':
-        model = yolo_v11_x(num_classes, exclude_post_process=True, activation=activation)
+    print(f"Creating YOLOv11-{version} ({task}) architecture (DPU-compatible mode)...")
+    if task == 'obb':
+        if version == 'n':
+            model = yolo_v11_n_obb(num_classes, exclude_post_process=True, activation=activation)
+        elif version == 's':
+            model = yolo_v11_s_obb(num_classes, exclude_post_process=True, activation=activation)
+        elif version == 'm':
+            model = yolo_v11_m_obb(num_classes, exclude_post_process=True, activation=activation)
+        elif version == 'l':
+            model = yolo_v11_l_obb(num_classes, exclude_post_process=True, activation=activation)
+        elif version == 'x':
+            model = yolo_v11_x_obb(num_classes, exclude_post_process=True, activation=activation)
+        else:
+            raise ValueError(f"Unsupported YOLOv11 variant: {version}")
     else:
-        raise ValueError(f"Unsupported YOLOv11 variant: {version}")
+        if version == 'n':
+            model = yolo_v11_n(num_classes, exclude_post_process=True, activation=activation)
+        elif version == 's':
+            model = yolo_v11_s(num_classes, exclude_post_process=True, activation=activation)
+        elif version == 'm':
+            model = yolo_v11_m(num_classes, exclude_post_process=True, activation=activation)
+        elif version == 'l':
+            model = yolo_v11_l(num_classes, exclude_post_process=True, activation=activation)
+        elif version == 'x':
+            model = yolo_v11_x(num_classes, exclude_post_process=True, activation=activation)
+        else:
+            raise ValueError(f"Unsupported YOLOv11 variant: {version}")
     
     print(f"✓ Model architecture created")
     
@@ -294,7 +314,8 @@ def quantization(title='optimize',
         args.model_path,
         version=args.version,
         num_classes=args.num_classes,
-        activation=args.activation
+        activation=args.activation,
+        task=args.task
     )
     
     # Move model to device

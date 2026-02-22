@@ -10,9 +10,42 @@ from argparse import ArgumentParser
 from datetime import datetime
 
 from utils import util
-from utils.dataset import Dataset
+from utils.dataset import Dataset, OBBDataset
+from models.yolo import (
+    yolo_v11_n, yolo_v11_n_obb,
+    yolo_v11_t, yolo_v11_t_obb,
+    yolo_v11_s, yolo_v11_s_obb,
+    yolo_v11_m, yolo_v11_m_obb,
+    yolo_v11_l, yolo_v11_l_obb,
+    yolo_v11_x, yolo_v11_x_obb,
+)
 
 warnings.filterwarnings("ignore")
+
+
+def _build_model_from_args(args, params):
+    """Build model from args.version and args.task for state_dict loading."""
+    version = getattr(args, 'version', 'n')
+    task = getattr(args, 'task', 'detect')
+    nc = len(params.get('names', [])) or 1
+    factories = {
+        ('n', 'detect'): yolo_v11_n,
+        ('n', 'obb'): yolo_v11_n_obb,
+        ('t', 'detect'): yolo_v11_t,
+        ('t', 'obb'): yolo_v11_t_obb,
+        ('s', 'detect'): yolo_v11_s,
+        ('s', 'obb'): yolo_v11_s_obb,
+        ('m', 'detect'): yolo_v11_m,
+        ('m', 'obb'): yolo_v11_m_obb,
+        ('l', 'detect'): yolo_v11_l,
+        ('l', 'obb'): yolo_v11_l_obb,
+        ('x', 'detect'): yolo_v11_x,
+        ('x', 'obb'): yolo_v11_x_obb,
+    }
+    fn = factories.get((version, task))
+    if fn is None:
+        raise ValueError(f"Unsupported version={version!r} or task={task!r}. Use version in n,t,s,m,l,x and task in detect,obb.")
+    return fn(nc, exclude_post_process=False, activation=getattr(args, 'activation', 'relu'))
 
 
 @torch.no_grad()
@@ -32,16 +65,32 @@ def test(args, params, model=None, mode="val"):
                 filename = os.path.basename(filename.rstrip())
                 filenames.append(f'{data_dir}/images/test2017/' + filename)
 
-    dataset = Dataset(filenames, args.input_size, params, augment=False)
+    task = getattr(args, 'task', 'detect')
+    if task == 'obb':
+        dataset = OBBDataset(filenames, args.input_size, params, augment=False)
+        collate_fn = OBBDataset.collate_fn
+    else:
+        dataset = Dataset(filenames, args.input_size, params, augment=False)
+        collate_fn = Dataset.collate_fn
     loader = data.DataLoader(dataset, batch_size=4, shuffle=False, num_workers=4,
-                             pin_memory=True, collate_fn=Dataset.collate_fn)
+                             pin_memory=True, collate_fn=collate_fn)
 
     if not model:
-        path = os.path.join("runs", f"train_{version}", "best.pt")
+        path = (getattr(args, 'weights', '') or '').strip()
+        if not path:
+            path = os.path.join("runs", f"train_{version}", "best.pt")
         print(f"Testing model: {path}")
-        model = torch.load(f=path, map_location='cuda', weights_only=False)
-        model = model['model'].float().fuse()
+        ckpt = torch.load(f=path, map_location='cuda', weights_only=False)
+        model = ckpt.get('ema') or ckpt.get('model') if isinstance(ckpt, dict) else None
+        if model is None:
+            model = ckpt
+        if not isinstance(model, torch.nn.Module):
+            state_dict = model if isinstance(model, dict) else ckpt
+            model = _build_model_from_args(args, params)
+            model.load_state_dict(state_dict, strict=False)
+        model = model.float().fuse()
 
+    model = model.cuda()
     model.half()
     model.eval()
 
@@ -62,11 +111,15 @@ def test(args, params, model=None, mode="val"):
         samples = samples / 255.  # 0 - 255 to 0.0 - 1.0
         _, _, h, w = samples.shape  # batch-size, channels, height, width
         scale = torch.tensor((w, h, w, h)).cuda()
+        scale_obb = torch.tensor((w, h, w, h, 1), device=samples.device, dtype=samples.dtype)
         # Inference
         outputs = model(samples)
         # NMS
-        outputs = util.non_max_suppression(outputs, confidence_threshold=0.0001, iou_threshold=0.65)
-        
+        if task == 'obb':
+            outputs = util.non_max_suppression_obb(outputs, confidence_threshold=0.001, iou_threshold=0.45)
+        else:
+            outputs = util.non_max_suppression(outputs, confidence_threshold=0.0001, iou_threshold=0.65)
+
         # Metrics
         for i, output in enumerate(outputs):
             idx = targets['idx'] == i
@@ -75,20 +128,25 @@ def test(args, params, model=None, mode="val"):
 
             cls = cls.cuda()
             box = box.cuda()
-            
-            metric = torch.zeros(output.shape[0], n_iou, dtype=torch.bool).cuda()
 
-            if output.shape[0] == 0:
+            if task == 'obb':
+                metric = torch.zeros(output.shape[0], n_iou, dtype=torch.bool).cuda()
+                if output.shape[0] == 0:
+                    metrics.append((metric, torch.zeros(0, device=output.device), torch.zeros(0, device=output.device), cls.squeeze(-1)))
+                    continue
                 if cls.shape[0]:
-                    metrics.append((metric, *torch.zeros((2, 0)).cuda(), cls.squeeze(-1)))
-                continue
-            
-            # Evaluate
-            if cls.shape[0]:
-                target = torch.cat(tensors=(cls, util.wh2xy(box) * scale), dim=1)
-                metric = util.compute_metric(output[:, :6], target, iou_v)
-            # Append
-            metrics.append((metric, output[:, 4], output[:, 5], cls.squeeze(-1)))
+                    target_xywhr = box * scale_obb
+                    metric = util.compute_metric_obb(output, cls.squeeze(-1), target_xywhr, iou_v)
+                metrics.append((metric, output[:, 4], output[:, 5], cls.squeeze(-1)))
+            else:
+                metric = torch.zeros(output.shape[0], n_iou, dtype=torch.bool).cuda()
+                if output.shape[0] == 0:
+                    metrics.append((metric, torch.zeros(0, device=output.device), torch.zeros(0, device=output.device), cls.squeeze(-1)))
+                    continue
+                if cls.shape[0]:
+                    target = torch.cat(tensors=(cls, util.wh2xy(box) * scale), dim=1)
+                    metric = util.compute_metric(output[:, :6], target, iou_v)
+                metrics.append((metric, output[:, 4], output[:, 5], cls.squeeze(-1)))
     
     # Compute metrics
     metrics = [torch.cat(x, dim=0).cpu().numpy() for x in zip(*metrics)]  # to numpy
@@ -134,6 +192,10 @@ def main():
                         help='Path to data directory') 
     parser.add_argument('--hyp', default='data/hyps/args.yaml', type=str,
                         help='Path to YAML config file')
+    parser.add_argument('--weights', default='', type=str,
+                        help='Path to checkpoint .pt for standalone test (default: runs/train_{version}/best.pt)')
+    parser.add_argument('--task', default='detect', type=str, choices=('detect', 'obb'),
+                        help='Task: detect or obb (must match the model)')
 
     args = parser.parse_args()
     print(args)

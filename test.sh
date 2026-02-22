@@ -1,0 +1,2 @@
+#python test.py --input-size 416 --version n --hyp data/hyps/args_hpd.yaml --weights runs/train_n/best.pt
+python test.py --input-size 416 --version n --hyp data/hyps/args_hpd.yaml --task obb --weights runs/train_n/best.pt

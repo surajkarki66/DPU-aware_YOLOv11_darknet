@@ -194,3 +194,4 @@ weights/*
 
 coco_data/
 runs/
+coco_data_obb/

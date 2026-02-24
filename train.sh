@@ -1,2 +1,11 @@
+#python3 train.py --input-size 416 --batch-size 32 --epochs 900 --version n --activation relu --hyp data/hyps/args_hpd.yaml
+#python3 train.py --input-size 416 --batch-size 32 --epochs 900 --version t --activation relu --hyp data/hyps/args_hpd.yaml
 #python3 train.py --input-size 416 --batch-size 32 --epochs 900 --version s --activation relu --hyp data/hyps/args_hpd.yaml
-python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version n --activation relu --hyp data/hyps/args_hpd.yaml
+python3 train.py --input-size 416 --batch-size 32 --epochs 900 --version m --activation relu --hyp data/hyps/args_hpd.yaml
+
+
+# OBB
+#python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version n --activation relu --hyp data/hyps/args_hpd.yaml
+#python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version t --activation relu --hyp data/hyps/args_hpd.yaml
+#python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version s --activation relu --hyp data/hyps/args_hpd.yaml
+#python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version m --activation relu --hyp data/hyps/args_hpd.yaml

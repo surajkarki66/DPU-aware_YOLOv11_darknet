@@ -358,20 +358,21 @@ def compute_ap(version, tp, conf, output, target, plot=False, names=(), eps=1E-1
                 # Fallback if class ID is missing from names list
                 plot_names.append(f"Class_{c}")
         
-        # Ensure the save directory exists
         import os
-        weight_dir = "./runs" # Or derived from save_dir variable
-        if not os.path.exists(weight_dir):
-            os.makedirs(weight_dir)
-            
-        # Use save_dir passed from argument ---
         if save_dir:
+            os.makedirs(save_dir, exist_ok=True)
             plot_pr_curve(px, py, ap, plot_names, save_dir=os.path.join(save_dir, "PR_curve.png"))
             plot_curve(px, f1, plot_names, save_dir=os.path.join(save_dir, "F1_curve.png"), y_label="F1")
             plot_curve(px, p, plot_names, save_dir=os.path.join(save_dir, "P_curve.png"), y_label="Precision")
             plot_curve(px, r, plot_names, save_dir=os.path.join(save_dir, "R_curve.png"), y_label="Recall")
         else:
-             print("Warning: Plot=True but no save_dir provided to compute_ap")
+            weight_dir = "./runs"
+            if not os.path.exists(weight_dir):
+                os.makedirs(weight_dir)
+            plot_pr_curve(px, py, ap, plot_names, save_dir=os.path.join(weight_dir, "PR_curve.png"))
+            plot_curve(px, f1, plot_names, save_dir=os.path.join(weight_dir, "F1_curve.png"), y_label="F1")
+            plot_curve(px, p, plot_names, save_dir=os.path.join(weight_dir, "P_curve.png"), y_label="Precision")
+            plot_curve(px, r, plot_names, save_dir=os.path.join(weight_dir, "R_curve.png"), y_label="Recall")
         
     i = smooth(f1.mean(0), 0.1).argmax()  # max F1 index
     p, r, f1 = p[:, i], r[:, i], f1[:, i]

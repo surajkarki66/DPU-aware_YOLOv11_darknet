@@ -231,8 +231,24 @@ def load_model_config(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
     
     with open(config_path, 'rb') as f:
-        tensor_no, tensor_stride, tensor_ch, tensor_nc = pickle.load(f)
-    
+        cfg = pickle.load(f)
+
+    # Support both legacy 4-tuple and newer 5-tuple (extra metadata) formats
+    if isinstance(cfg, (list, tuple)):
+        if len(cfg) < 4:
+            raise ValueError(f"Config tuple has too few elements (<4): {len(cfg)}")
+        tensor_no, tensor_stride, tensor_ch, tensor_nc = cfg[:4]
+    elif isinstance(cfg, dict):
+        # Fallback if a dict format is ever used
+        tensor_no = cfg.get("tensor_no")
+        tensor_stride = cfg.get("tensor_stride")
+        tensor_ch = cfg.get("tensor_ch")
+        tensor_nc = cfg.get("tensor_nc")
+        if None in (tensor_no, tensor_stride, tensor_ch, tensor_nc):
+            raise ValueError(f"Config dict missing required keys: {cfg.keys()}")
+    else:
+        raise TypeError(f"Unsupported config type: {type(cfg)}")
+
     return tensor_no, tensor_stride, tensor_ch, tensor_nc
 
 
@@ -275,11 +291,10 @@ def res_exp(pred, config_path, iou):
 
     # Apply post-processing
     predi = run_model_config(pred, config_path)
-    
-    # Get number of classes from config
-    with open(config_path, 'rb') as cf:
-        _, _, _, tensor_nc = pickle.load(cf)
-    
+
+    # Get number of classes from config (reuse loader to support 4- or 5-tuple formats)
+    _, _, _, tensor_nc = load_model_config(config_path)
+
     # Apply NMS
     box_conf = non_max_suppression(prediction=predi, conf_thres=0.001, iou_thres=iou, nc=tensor_nc)
     box_conf[0] = box_conf[0].detach().numpy()

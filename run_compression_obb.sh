@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Configuration
-MODEL_PATH="./best.pt"
+MODEL_PATH="./best_state_dict.pt"
 VERSION="n"
 NUM_CLASSES=1
 ACTIVATION="relu"

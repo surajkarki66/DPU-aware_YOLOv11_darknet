@@ -3,7 +3,7 @@ import os
 from tqdm import tqdm
 
 # Define base directory
-base_dir = "./coco_data"
+base_dir = "./dotav1.5-coco"
 
 # Subdirectories containing images
 subdirs = ["images/train2017", "images/val2017", "images/test2017"]

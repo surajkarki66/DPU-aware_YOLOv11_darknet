@@ -296,7 +296,7 @@ def main():
     parser.add_argument('--version', default='n', type=str)
     parser.add_argument('--activation', default='relu', type=str, 
                         help='Activation function (e.g., relu, silu, etc.)')
-    parser.add_argument('--data-dir', default='./coco_data', type=str,
+    parser.add_argument('--data-dir', default='./coco', type=str,
                         help='Path to data directory')
     parser.add_argument('--hyp', default='data/hyps/args.yaml', type=str,
                         help='Path to YAML config file')

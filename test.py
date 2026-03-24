@@ -196,7 +196,7 @@ def main():
                         help='Path to checkpoint .pt for standalone test (default: runs/train_{version}/best.pt)')
     parser.add_argument('--task', default='detect', type=str, choices=('detect', 'obb'),
                         help='Task: detect or obb (must match the model)')
-
+    parser.add_argument('--mode', default='test', type=str, choices=('test', 'val'))
     args = parser.parse_args()
     print(args)
 
@@ -220,7 +220,7 @@ def main():
     util.setup_seed()
     util.setup_multi_processes()
 
-    test(args, params, mode="test")
+    test(args, params, mode=args.mode)
 
     torch.cuda.empty_cache()
 

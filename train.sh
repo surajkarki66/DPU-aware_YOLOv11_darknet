@@ -11,5 +11,5 @@
 #python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version m --activation relu --hyp data/hyps/args_hpd.yaml --data-dir ./coco_data_obb
 
 # OBB
-#python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version n --activation relu --hyp data/hyps/args.yaml --data-dir ./dota.v1_large_coco
-python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version t --activation relu --hyp data/hyps/args.yaml --data-dir ./dota.v1_large_coco
+#python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version n --activation relu --hyp data/hyps/args_dota_large.yaml --data-dir ./dota.v1_large_coco
+python3 train.py --task obb --input-size 416 --batch-size 32 --epochs 900 --version t --activation relu --hyp data/hyps/args_dota_large.yaml --data-dir ./dota.v1_large_coco

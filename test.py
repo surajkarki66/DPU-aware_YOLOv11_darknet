@@ -164,7 +164,7 @@ def test(args, params, model=None, mode="val"):
     print(('%10s' + '%10.3g' * 4) % ('', m_pre, m_rec, map50, mean_ap))
     
     # Save metrics to JSON only
-    if mode == "test":
+    if mode == "val":
         metrics_dict = {
             "mean_ap": float(mean_ap),
             "map50": float(map50),

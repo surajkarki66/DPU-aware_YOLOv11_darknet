@@ -19,19 +19,23 @@ mosaic: 1.000000000000            # image mosaic (probability)
 mix_up: 0.000000000000            # image mix-up (probability)
 
 names:
-  0: baseball diamond
-  1: basketball court
-  2: bridge
-  3: container crane
-  4: ground track field
-  5: harbor
-  6: helicopter
-  7: large vehicle
-  8: plane
-  9: roundabout
-  10: ship
-  11: small vehicle
-  12: soccer ball field
-  13: storage tank
-  14: swimming pool
-  15: tennis court
+  0: aeroplane
+  1: bicycle
+  2: bird
+  3: boat
+  4: bottle
+  5: bus
+  6: car
+  7: cat
+  8: chair
+  9: cow
+  10: diningtable
+  11: dog
+  12: horse
+  13: motorbike
+  14: person
+  15: pottedplant
+  16: sheep
+  17: sofa
+  18: train
+  19: tvmonitor

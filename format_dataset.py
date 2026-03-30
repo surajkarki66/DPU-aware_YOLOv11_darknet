@@ -3,7 +3,7 @@ import os
 from tqdm import tqdm
 
 # Define base directory
-base_dir = "./VOC_COCO"
+base_dir = "./kitti_COCO"
 
 # Subdirectories containing images
 subdirs = ["images/train2017", "images/val2017", "images/test2017"]

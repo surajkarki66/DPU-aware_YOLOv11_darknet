@@ -20,7 +20,7 @@ A PyTorch implementation of YOLOv11 optimized for deployment on Xilinx FPGA Deep
 - [Training](#training)
 - [Inference](#inference)
 - [Model Profiling](#model-profiling)
-- [Quantization &amp; Deployment](#quantization--deployment)
+- [Quantization & Deployment](#quantization--deployment)
 - [Project Structure](#project-structure)
 - [DPU Architectures](#dpu-architectures)
 
@@ -39,7 +39,7 @@ git clone <repository-url>
 cd HW-aware-YOLOv11
 ```
 
-2. Install dependencies:
+1. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -71,16 +71,17 @@ coco_data/
 │   └── test2017/
 └── labels/
     ├── train2017/
-    └── val2017/
+    ├── val2017/
+    └── test2017/
 ```
 
-2. Generate dataset file lists:
+1. Generate dataset file lists (writes `train2017.txt`, `val2017.txt`, `test2017.txt` next to `images/`):
 
 ```bash
-python format_dataset.py
+python format_dataset.py --base-dir /path/to/coco_data
 ```
 
-This creates text files with image paths for train/val/test splits.
+The default base directory is `./kitti_COCO` if `--base-dir` is omitted.
 
 ### Prepare Calibration Data
 
@@ -117,8 +118,8 @@ python train.py \
 
 Hyperparameters and dataset settings are defined in YAML files:
 
-- [`data/hyps/args.yaml`](data/hyps/args.yaml): Full COCO dataset (80 classes)
-- [`data/hyps/args_hpd.yaml`](data/hyps/args_hpd.yaml): Custom dataset configuration
+- `[data/hyps/args.yaml](data/hyps/args.yaml)`: Full COCO dataset (80 classes)
+- `[data/hyps/args_hpd.yaml](data/hyps/args_hpd.yaml)`: Custom dataset configuration
 
 Training outputs are saved to `runs/` directory.
 
@@ -193,9 +194,11 @@ bash run_compression.sh
 
 This script performs:
 
-1. **Calibration**: Quantize model using calibration dataset
-2. **Testing**: Validate quantized model accuracy
-3. **Compilation**: Generate DPU-ready `.xmodel` file
+1. **Calibration** (`--quant_mode calib`): Run calibration on your dataset
+2. **Testing** (`--quant_mode test`): Validate the quantized model
+3. **Deploy export** (`--quant_mode test --deploy`): Export a DPU-ready `.xmodel` (and related artifacts) under `quantize_result/` (renamed by the script)
+
+DPU **bitstream-side compilation** (`vai_c_xir`) is a separate step; see Step 4 below and `[vitis-ai/compilation/README.md](vitis-ai/compilation/README.md)`.
 
 ### Manual Quantization
 
@@ -229,22 +232,37 @@ python vai_quantize.py \
     --quant_mode test
 ```
 
-#### Step 3: Compilation
+#### Step 3: Export `.xmodel` (deploy)
 
-Navigate to compilation directory:
+From the repo root, run test mode with `--deploy` (typically `batch_size 1`, `subset_len 1` as in `run_compression.sh`):
+
+```bash
+python vai_quantize.py \
+    --model_path runs/best_state_dict.pt \
+    --version n \
+    --num_classes 1 \
+    --activation relu \
+    --batch_size 1 \
+    --subset_len 1 \
+    --img_height 416 \
+    --img_width 416 \
+    --target DPUCZDX8G_ISA1_B4096 \
+    --quant_mode test \
+    --deploy
+```
+
+This produces the quantized `.xmodel` and supporting files (e.g. under `quantize_result/`).
+
+#### Step 4: DPU compilation (vai_c_xir)
+
+Copy the exported `.xmodel` into `vitis-ai/compilation/models/` (name must match what you pass to `vai_c_xir`), pick the matching `Architectures/arch_B*.json`, uncomment the right command in `run_compile.sh`, then:
 
 ```bash
 cd vitis-ai/compilation
 bash run_compile.sh
 ```
 
-The compilation script:
-
-- Converts quantized model to DPU-compatible format
-- Optimizes for specific DPU architecture
-- Generates `.xmodel` file for deployment
-
-Compiled models are saved in `vitis-ai/compilation/models/`
+This runs the Xilinx compiler and writes platform-specific outputs under `vitis-ai/compilation/zynq_output/` (see `[vitis-ai/compilation/README.md](vitis-ai/compilation/README.md)`). For OBB models, use `run_compression_obb.sh` for the quant workflow and the OBB lines in `run_compile.sh`.
 
 ## 🏗️ Project Structure
 
@@ -259,22 +277,26 @@ HW-aware-YOLOv11/
 │   └── util.py                 # Helper functions
 ├── data/                        # Data configurations
 │   └── hyps/                   # Hyperparameter configs
-├── vitis-ai/                    # Vitis-AI deployment
-│   ├── compilation/            # Model compilation
-│   │   ├── Architectures/      # DPU architecture JSONs
-│   │   ├── models/             # Compiled models
-│   │   └── run_compile.sh      # Compilation script
-│   └── evaluation/             # Post-deployment evaluation
-│       ├── coco_prep.py        # COCO evaluation prep
-│       ├── evaluate.py         # Accuracy evaluation
-│       └── post_processing.py  # DPU output processing
+├── vitis-ai/                    # Vitis-AI deployment (see vitis-ai/README.md)
+│   ├── README.md
+│   ├── compilation/           # vai_c_xir: .xmodel → DPU package
+│   │   ├── Architectures/       # DPU architecture JSONs (B512–B4096)
+│   │   ├── models/              # Place exported .xmodels for run_compile.sh
+│   │   ├── zynq_output/         # Compiler output (after run_compile.sh)
+│   │   ├── run_compile.sh
+│   │   └── README.md
+│   └── evaluation/            # Post-quantization metrics
+│       ├── README.md
+│       ├── Detect/            # Axis-aligned: post_processing, coco_prep, evaluate
+│       └── OBB/               # Oriented boxes: post_processing_obb, evaluate_obb
 ├── train.py                     # Training script
 ├── inference.py                 # Inference script
 ├── vai_quantize.py             # Vitis-AI quantization
 ├── model_profile.py            # Model profiling
-├── format_dataset.py           # Dataset preparation
+├── format_dataset.py           # Dataset path lists (train/val/test .txt)
 ├── prepare_calibration_data.py # Calibration data prep
-├── run_compression.sh          # Automated workflow
+├── run_compression.sh          # Detect: calib → test → deploy export
+├── run_compression_obb.sh      # OBB: same pipeline for oriented model
 └── requirements.txt            # Python dependencies
 ```
 
@@ -282,28 +304,32 @@ HW-aware-YOLOv11/
 
 Pre-configured DPU architectures are available in [`vitis-ai/compilation/Architectures/`](vitis-ai/compilation/Architectures/):
 
-| Architecture    | Description      | RAM Size |
-| --------------- | ---------------- | -------- |
-| arch_B512.json  | Smallest DPU     | 512 KB   |
-| arch_B800.json  | Small DPU        | 800 KB   |
-| arch_B1024.json | Medium-Small DPU | 1 MB     |
-| arch_B1152.json | Medium DPU       | 1.125 MB |
-| arch_B1600.json | Medium-Large DPU | 1.56 MB  |
-| arch_B2304.json | Large DPU        | 2.25 MB  |
-| arch_B3136.json | Very Large DPU   | 3.06 MB  |
-| arch_B4096.json | Largest DPU      | 4 MB     |
+
+| Architecture    | RAM Size |
+| --------------- | -------- |
+| arch_B512.json  | 512 KB   |
+| arch_B800.json  | 800 KB   |
+| arch_B1024.json | 1 MB     |
+| arch_B1152.json | 1.125 MB |
+| arch_B1600.json | 1.56 MB  |
+| arch_B2304.json | 2.25 MB  |
+| arch_B3136.json | 3.06 MB  |
+| arch_B4096.json | 4 MB     |
+
 
 Select the appropriate architecture based on your FPGA resources and performance requirements.
 
 ## 🎓 Model Variants
 
-| Variant  | Width Multiplier | Depth Multiplier | Parameters | Use Case                |
-| -------- | ---------------- | ---------------- | ---------- | ----------------------- |
-| YOLOv11n | Smallest         | Minimal          | Lowest     | Edge devices, real-time |
-| YOLOv11s | Small            | Minimal          | Low        | Balanced speed/accuracy |
-| YOLOv11m | Medium           | Medium           | Medium     | General purpose         |
-| YOLOv11l | Large            | Deep             | High       | High accuracy           |
-| YOLOv11x | Largest          | Deep             | Highest    | Maximum accuracy        |
+
+| Variant  | Width Multiplier | Depth Multiplier | Parameters |
+| -------- | ---------------- | ---------------- | ---------- |
+| YOLOv11n | Smallest         | Minimal          | Lowest     |
+| YOLOv11s | Small            | Minimal          | Low        |
+| YOLOv11m | Medium           | Medium           | Medium     |
+| YOLOv11l | Large            | Deep             | High       |
+| YOLOv11x | Largest          | Deep             | Highest    |
+
 
 ## 📝 Notes
 
@@ -311,26 +337,6 @@ Select the appropriate architecture based on your FPGA resources and performance
 - **Input Size**: Common sizes are 416x416 or 640x640. Smaller sizes improve inference speed
 - **Batch Size**: Adjust based on GPU memory during training
 - **Quantization**: Post-training quantization converts FP32 models to INT8 for DPU deployment
-
-## 🐛 Troubleshooting
-
-### Training Issues
-
-- Ensure dataset paths in YAML config files are correct
-- Check CUDA availability for GPU training
-- Adjust batch size if running out of memory
-
-### Quantization Issues
-
-- Verify calibration dataset is properly prepared
-- Ensure model checkpoint loads correctly
-- Check DPU target architecture matches your hardware
-
-### Compilation Issues
-
-- Confirm Vitis-AI environment is properly set up
-- Verify `.xmodel` output path permissions
-- Check DPU architecture JSON file is valid
 
 ## 📄 License
 

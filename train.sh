@@ -21,4 +21,5 @@
 # Kitti
 #python3 train.py --input-size 416 --batch-size 32 --epochs 900 --version n --activation relu --hyp data/hyps/args_kitti.yaml --data-dir ./kitti_COCO
 
-
+# COCO
+python3 train.py --input-size 416 --batch-size 32 --epochs 300 --version n --activation relu --hyp data/hyps/args_coco.yaml --data-dir ./coco

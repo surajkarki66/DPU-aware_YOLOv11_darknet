@@ -6,7 +6,6 @@ import xir
 import os
 import sys
 import time
-
 from glob import glob
 
 
@@ -27,11 +26,50 @@ def get_child_subgraph_dpu(graph: "Graph"):
 
 
 def preprocess_image(image, input_scale, width=416, height=416):
-    """Preprocess frame for YOLO input"""
-    image_resized = cv2.resize(image, (width, height))
-    image_normalized = image_resized.astype(np.float32) / 255.0
-    image_scaled = (image_normalized * input_scale).astype(np.int8)
-    return image_scaled
+    """
+    Preprocess frame for YOLO input using letterbox:
+      - Aspect-ratio preserving resize
+      - Gray (114, 114, 114) padding to reach exact target dimensions
+      - BGR -> RGB, normalize to [0, 1], quantize to int8 for DPU
+
+    Returns:
+        padded (np.int8) : preprocessed image ready for DPU
+        meta   (dict)    : gain, pad_w, pad_h, h0, w0 — needed for
+                           inverse transform in eval_npz.py
+    """
+    h0, w0 = image.shape[:2]
+
+    # Uniform scale that fits the image inside (width x height) without cropping
+    r = min(width / w0, height / h0)
+    new_w, new_h = int(round(w0 * r)), int(round(h0 * r))
+
+    # Aspect-ratio preserving resize
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+    # Symmetric gray padding to reach target size
+    pad_w = (width - new_w) / 2.0
+    pad_h = (height - new_h) / 2.0
+    left, right = int(round(pad_w - 0.1)), int(round(pad_w + 0.1))
+    top, bottom = int(round(pad_h - 0.1)), int(round(pad_h + 0.1))
+
+    padded = cv2.copyMakeBorder(
+        resized, top, bottom, left, right,
+        cv2.BORDER_CONSTANT, value=(114, 114, 114)
+    )
+
+    # BGR -> RGB, normalize, quantize
+    padded = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
+    padded = padded.astype(np.float32) / 255.0
+    padded = (padded * input_scale).astype(np.int8)
+
+    meta = {
+        "h0": h0,
+        "w0": w0,
+        "gain": r,
+        "pad_w": left,
+        "pad_h": top,
+    }
+    return padded, meta
 
 
 # YOLOv11-OBB: 6 outputs (3 detection + 3 angle)
@@ -84,6 +122,7 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
     print(f"Output fix_points: {output_fixpoints}")
     if obb:
         print(f"Model type: YOLOv11-OBB (outputs 0,1,2=detect, 3,4,5=angle)")
+    print(f"Preprocessing: Letterbox (aspect-ratio preserving + gray pad 114)")
     
     # Get all image files
     IMG_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp']
@@ -100,6 +139,7 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
     # Storage for all predictions
     all_image_names = []
     all_predictions = [] 
+    all_metas = []  # Store letterbox metadata for each image
     
     total_inference_time = 0
     overall_start_time = time.time()
@@ -114,8 +154,8 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
             print(f"WARNING: Failed to load {img_name}, skipping...")
             continue
         
-        # Preprocess
-        processed_image = preprocess_image(image, input_scale, width=img_width, height=img_height)
+        # Preprocess with letterbox
+        processed_image, meta = preprocess_image(image, input_scale, width=img_width, height=img_height)
         
         # Prepare input data
         input_data = [np.empty(input_shape, dtype=np.int8, order="C")]
@@ -137,6 +177,7 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
         # Store results (keep as int8 to save space)
         all_image_names.append(img_name)
         all_predictions.append([out.copy() for out in output_data])
+        all_metas.append(meta)
         
         # Progress update
         if (idx + 1) % 10 == 0 or (idx + 1) == len(image_paths):
@@ -147,6 +188,10 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
     
     total_processing_time = time.time() - overall_start_time
     num_images = len(all_predictions)
+    
+    if num_images == 0:
+        print("ERROR: No images were successfully processed.")
+        return
     
     # Save predictions to compressed NPZ file
     # Format aligned with OBB export (test.py / inference.py): output_0,1,2 = detect, output_3,4,5 = angle
@@ -159,6 +204,8 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
         'model_type': 'obb' if obb else 'detect',
         'img_height': np.int32(img_height),
         'img_width': np.int32(img_width),
+        # Store letterbox metadata as JSON strings for each image
+        'image_metas': np.array([json.dumps(m) for m in all_metas]),
     }
     if obb:
         save_dict['reg_max'] = np.int32(OBB_REG_MAX)
@@ -180,6 +227,8 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
     print(f"{'='*70}")
     print(f"Total images processed: {num_images}")
     print(f"")
+    print(f"Preprocessing: Letterbox (aspect-ratio preserving + gray pad 114)")
+    print(f"")
     print(f"🚀 DPU INFERENCE:")
     print(f"   Total time: {total_inference_time:.2f}s")
     print(f"   Average per image: {total_inference_time/num_images*1000:.2f}ms")
@@ -193,7 +242,7 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
     print(f"💾 OUTPUT FILE:")
     print(f"   File: {output_npz_path}")
     print(f"   Size: {file_size_mb:.2f} MB")
-    print(f"   Format: Compressed NPZ (int8)")
+    print(f"   Format: Compressed NPZ (int8 predictions + letterbox metadata)")
     if obb:
         print(f"   Model: YOLOv11-OBB (outputs 0,1,2=detect, 3,4,5=angle)")
     print(f"{'='*70}\n")
@@ -202,6 +251,7 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
     fps_stats_path = output_npz_path.replace(".npz", "_fps.json") if output_npz_path.endswith(".npz") else output_npz_path + "_fps.json"
     fps_stats = {
         "num_images": num_images,
+        "preprocessing": "letterbox",
         "dpu_inference": {
             "total_time_s": round(total_inference_time, 4),
             "avg_per_image_ms": round(total_inference_time / num_images * 1000, 2),
@@ -215,7 +265,7 @@ def run_fpga_inference(model_path, test_data_path, output_npz_path, img_height=4
 
 if __name__ == '__main__':
     import argparse
-    parser = argparse.ArgumentParser(description="Run YOLOv11 / YOLOv11-OBB on FPGA and save raw outputs to NPZ")
+    parser = argparse.ArgumentParser(description="Run YOLOv11 / YOLOv11-OBB on FPGA and save raw outputs to NPZ with letterbox preprocessing")
     parser.add_argument("model_path", help="Path to .xmodel file")
     parser.add_argument("test_data_path", help="Path to folder containing test images")
     parser.add_argument("output_npz_path", help="Output NPZ file path (e.g., predictions.npz)")

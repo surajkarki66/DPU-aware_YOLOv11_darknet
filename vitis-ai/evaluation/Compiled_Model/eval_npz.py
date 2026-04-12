@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def dequantize_int8_outputs(tensors: list[np.ndarray], fixpoints: list[int]) -> 
 
 
 def _classify_obb_output_shape(shape: tuple[int, ...], min_box_c: int, ne: int) -> tuple[str, int]:
-    """Return ('box'|'ang', spatial_area) for NCHW or NHWC 4D tensor shapes from the DPU."""
+    """Return ('box'|'ang', spatial_area) for NCHW or NHWC 4D tensors from the DPU."""
     if len(shape) != 4:
         raise ValueError(f"Expected 4D output shape, got {shape}")
     _, a, b, c = (int(shape[0]), int(shape[1]), int(shape[2]), int(shape[3]))
@@ -198,6 +199,11 @@ def load_npz_predictions(npz_path: Path) -> dict:
         meta["reg_max"] = int(np.asarray(data["reg_max"]).reshape(()))
     if "strides" in data.files:
         meta["strides"] = [int(x) for x in np.asarray(data["strides"]).tolist()]
+    
+    # Load letterbox metadata if available
+    if "image_metas" in data.files:
+        metas_json = data["image_metas"]
+        meta["image_metas"] = [json.loads(m) for m in metas_json.tolist()]
 
     preds: list[list[np.ndarray]] = []
     nimg = len(image_names)
@@ -306,7 +312,14 @@ def run_detect_npz(
     min_box_c = 4 * head.reg_max + head.nc
 
     print(f"NPZ images: {len(npz_meta['image_names'])}")
-    print(f"Task: detect | imgsz: {head.imgsz} (square DPU resize -> stretch_meta)")
+    print(f"Task: detect | imgsz: {head.imgsz} (square DPU resize -> letterbox_meta)")
+    
+    # Check if we have letterbox metadata
+    use_letterbox = "image_metas" in npz_meta
+    if use_letterbox:
+        print(f"Using letterbox metadata for coordinate transformation")
+    else:
+        print(f"Warning: No letterbox metadata found, falling back to stretch_meta")
 
     for i, name in enumerate(npz_meta["image_names"]):
         im_path = name_to_path.get(name)
@@ -325,7 +338,22 @@ def run_detect_npz(
         xyxy, scores = head.decode(outputs)
 
         h0, w0 = im0.shape[:2]
-        meta = stretch_meta(h0, w0, head.imgsz)
+        
+        # Use letterbox metadata if available, otherwise fall back to stretch_meta
+        if use_letterbox:
+            letterbox_meta = npz_meta["image_metas"][i]
+            # Create meta dict in the format expected by postprocess
+            meta = {
+                "h0": h0,
+                "w0": w0,
+                "gain": letterbox_meta["gain"],
+                "pad_w": letterbox_meta["pad_w"],
+                "pad_h": letterbox_meta["pad_h"],
+                # No "layout" key means it will use letterbox mode
+            }
+        else:
+            meta = stretch_meta(h0, w0, head.imgsz)
+            
         det = head.postprocess(xyxy, scores, meta)
         vis = head.draw(im0, det)
         out_file = save_dir / im_path.name
@@ -375,7 +403,14 @@ def run_obb_npz(
         )
 
     print(f"NPZ images: {len(npz_meta['image_names'])}")
-    print(f"Task: obb | imgsz: {head.imgsz} (square DPU resize -> stretch_meta)")
+    print(f"Task: obb | imgsz: {head.imgsz} (square DPU resize -> letterbox_meta)")
+    
+    # Check if we have letterbox metadata
+    use_letterbox = "image_metas" in npz_meta
+    if use_letterbox:
+        print(f"Using letterbox metadata for coordinate transformation")
+    else:
+        print(f"Warning: No letterbox metadata found, falling back to stretch_meta")
 
     for i, name in enumerate(npz_meta["image_names"]):
         im_path = name_to_path.get(name)
@@ -394,7 +429,21 @@ def run_obb_npz(
         xywh, cls_scores, angles = head.decode(outputs)
 
         h0, w0 = im0.shape[:2]
-        meta = stretch_meta(h0, w0, head.imgsz)
+        
+        # Use letterbox metadata if available, otherwise fall back to stretch_meta
+        if use_letterbox:
+            letterbox_meta = npz_meta["image_metas"][i]
+            # Create meta dict in the format expected by postprocess
+            meta = {
+                "h0": h0,
+                "w0": w0,
+                "gain": letterbox_meta["gain"],
+                "pad_w": letterbox_meta["pad_w"],
+                "pad_h": letterbox_meta["pad_h"],
+            }
+        else:
+            meta = stretch_meta(h0, w0, head.imgsz)
+            
         det = head.postprocess(xywh, cls_scores, angles, meta)
         vis = head.draw(im0, det)
         out_file = save_dir / im_path.name

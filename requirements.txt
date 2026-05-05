@@ -4,7 +4,7 @@
 torch==2.4.1
 torchvision==0.19.1
 opencv-python==4.7.0.72
-Pillow==9.5.0
+Pillow==12.2.0
 numpy<2.0.0
 pyyaml==6.0
 tqdm==4.65.0

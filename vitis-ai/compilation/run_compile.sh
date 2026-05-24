@@ -5,7 +5,7 @@
 #vai_c_xir -x models/YOLO_OBB_int_B4096.xmodel -a ./Architectures/arch_B4096.json -o zynq_output/yolov11n_obb_B4096/ -n yolov11n_obb_B4096
 
 ## B3136
-#vai_c_xir -x models/YOLO_int_B3136.xmodel -a ./Architectures/arch_B3136.json -o zynq_output/yolov11n_B3136/ -n yolov8n_B3136
+#vai_c_xir -x models/YOLO_int_B3136.xmodel -a ./Architectures/arch_B3136.json -o zynq_output/yolov11n_B3136/ -n yolov11n_B3136
 #vai_c_xir -x models/YOLO_OBB_int_B3136.xmodel -a ./Architectures/arch_B3136.json -o zynq_output/yolov11n_obb_B3136/ -n yolov11n_obb_B3136
 
 ## B2304

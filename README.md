@@ -264,6 +264,15 @@ bash run_compile.sh
 
 This runs the Xilinx compiler and writes platform-specific outputs under `vitis-ai/compilation/zynq_output/` (see `[vitis-ai/compilation/README.md](vitis-ai/compilation/README.md)`). For OBB models, use `run_compression_obb.sh` for the quant workflow and the OBB lines in `run_compile.sh`.
 
+#### Step 5: Evaluation
+
+Score quantized ONNX or compiled NPZ outputs with scripts under `vitis-ai/evaluation/`:
+
+- **ONNX:** `Quantized_Model/eval_onnx.py` (`--task detect` or `--task obb`, `--quant-meta` from calib export)
+- **FPGA NPZ:** `Compiled_Model/fpga_inference.py` or `fpga_inference_obb.py` → `eval_npz.py`
+
+See [vitis-ai/evaluation/README.md](vitis-ai/evaluation/README.md) and [vitis-ai/README.md](vitis-ai/README.md).
+
 ## 🏗️ Project Structure
 
 ```
@@ -279,16 +288,16 @@ HW-aware-YOLOv11/
 │   └── hyps/                   # Hyperparameter configs
 ├── vitis-ai/                    # Vitis-AI deployment (see vitis-ai/README.md)
 │   ├── README.md
-│   ├── compilation/           # vai_c_xir: .xmodel → DPU package
+│   ├── compilation/             # vai_c_xir: .xmodel → DPU package
 │   │   ├── Architectures/       # DPU architecture JSONs (B512–B4096)
 │   │   ├── models/              # Place exported .xmodels for run_compile.sh
 │   │   ├── zynq_output/         # Compiler output (after run_compile.sh)
 │   │   ├── run_compile.sh
 │   │   └── README.md
-│   └── evaluation/            # Post-quantization metrics
+│   └── evaluation/              # Post-quantization metrics
 │       ├── README.md
-│       ├── Detect/            # Axis-aligned: post_processing, coco_prep, evaluate
-│       └── OBB/               # Oriented boxes: post_processing_obb, evaluate_obb
+│       ├── Quantized_Model/     # eval_onnx.py (detect or OBB via --task)
+│       └── Compiled_Model/      # fpga_inference*.py → eval_npz.py
 ├── train.py                     # Training script
 ├── inference.py                 # Inference script
 ├── vai_quantize.py             # Vitis-AI quantization

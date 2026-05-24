@@ -355,7 +355,7 @@ This project is for research and educational purposes.
 
 - Ultralytics YOLOv11 architecture
 - Xilinx Vitis-AI toolkit
-- PyTorch framework
+- https://github.com/jahongir7174/YOLOv11-pt/
 
 ## 📧 Contact
 

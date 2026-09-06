@@ -1,4 +1,4 @@
-# Hardware-Aware YOLOv11 for Xilinx DPU
+# YOLOv11 for Xilinx DPU
 
 A PyTorch implementation of YOLOv11 optimized for deployment on Xilinx FPGA Deep Learning Processing Units (DPU) using Vitis-AI. This project provides a complete workflow from training to deployment, including DPU-aware model design, quantization, and compilation.
 
@@ -346,10 +346,6 @@ Select the appropriate architecture based on your FPGA resources and performance
 - **Input Size**: Common sizes are 416x416 or 640x640. Smaller sizes improve inference speed
 - **Batch Size**: Adjust based on GPU memory during training
 - **Quantization**: Post-training quantization converts FP32 models to INT8 for DPU deployment
-
-## 📄 License
-
-This project is for research and educational purposes.
 
 ## 🙏 Acknowledgments
 
